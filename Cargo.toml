@@ -1,0 +1,36 @@
+[package]
+name = "buttrbase-sdk"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Official Rust SDK for buttrbase: client for the buttrbase API + verifier for buttrbase-issued JWTs."
+license = "Apache-2.0"
+repository = "https://github.com/S7-Works/buttrbase-sdk-rust"
+homepage = "https://buttrbase.com"
+documentation = "https://docs.rs/buttrbase-sdk"
+keywords = ["buttrbase", "auth", "identity", "jwt", "sdk"]
+categories = ["api-bindings", "authentication"]
+
+[lib]
+name = "buttrbase_sdk"
+crate-type = ["rlib"]
+
+[dependencies]
+# Shared
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "1", features = ["sync"] }
+
+# Client side
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+urlencoding = "2.1"
+
+# Verify side
+http = "1.3"
+jsonwebtoken = "9.3"
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
