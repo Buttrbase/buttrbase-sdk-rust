@@ -36,6 +36,10 @@ impl ButtrBaseClient {
         }
     }
 
+    pub fn set_token(&mut self, token: String) {
+        self.token = Some(token);
+    }
+
     pub async fn request<T: DeserializeOwned>(
         &self,
         method: Method,
@@ -401,6 +405,35 @@ impl ButtrBaseClient {
             Method::PUT,
             &format!("/api/v2/organizations/{}/users/{}/role", org_uuid, user_uuid),
             Some(&body),
+        )
+        .await
+    }
+
+    // Teams
+    pub async fn get_org_teams(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<crate::models::Team>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/v2/organizations/{}/teams", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn get_user_teams(
+        &self,
+        org_uuid: &str,
+        user_uuid: &str,
+    ) -> Result<Vec<crate::models::Team>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!(
+                "/api/v2/organizations/{}/users/{}/teams",
+                org_uuid, user_uuid
+            ),
+            None::<&()>,
         )
         .await
     }
