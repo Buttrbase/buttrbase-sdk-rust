@@ -2,218 +2,111 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Deserialize, Debug)]
-pub struct User {
+// ── App credentials ───────────────────────────────────────────────────────
+
+/// Live/sandbox environment inferred from the credential prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    Live,
+    Sandbox,
+}
+
+impl Environment {
+    pub(crate) fn from_client_id(client_id: &str) -> Self {
+        if client_id.starts_with("bb_test_") {
+            Self::Sandbox
+        } else {
+            Self::Live
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Sandbox => "sandbox",
+        }
+    }
+
+    pub fn is_sandbox(&self) -> bool {
+        matches!(self, Self::Sandbox)
+    }
+}
+
+impl std::fmt::Display for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// ── Auth / tokens ─────────────────────────────────────────────────────────
+
+/// Access + refresh token pair returned after OTP verification.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TokenPair {
+    pub token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    pub user_uuid: Option<Uuid>,
+}
+
+/// Returned when sending/refreshing — always just the new access token.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccessToken {
+    pub token: String,
+    pub refresh_token: Option<String>,
+}
+
+// ── Entitlements ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EntitlementResult {
+    pub granted: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct EntitlementCheckResponse {
+    pub data: EntitlementResult,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct EntitlementBatchResponseData {
+    pub data: std::collections::HashMap<String, EntitlementResult>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EffectiveEntitlement {
+    pub feature_key: String,
+    pub granted: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+// ── Wallet ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WalletSummary {
+    pub balance_cents: i64,
+    pub budget_limit_cents: Option<i64>,
+    pub budget_period: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WalletTransaction {
     pub id: i32,
-    pub user_uuid: String,
-    pub email: String,
-    pub org_uuid: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Profile {
-    pub id: i32,
-    pub user_uuid: String,
-    pub email: String,
-    pub first_name: String,
-    pub last_name: String,
-    pub phone: String,
-    pub org_uuid: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct LoginResponse {
-    pub access_token: Option<String>,
-    pub user: User,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct CheckoutResponse {
-    pub id: String,
-    pub url: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Invoice {
-    pub id: i32,
-    pub user_id: i32,
-    pub subscription_id: i32,
-    pub provider: String,
-    pub provider_invoice_id: String,
-    pub amount: i32,
-    pub status: String,
-    pub invoice_pdf_url: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ButtrBaseError {
-    pub message: String,
-    pub code: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ButtrBaseErrorResponse {
-    pub error: ButtrBaseError,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Permission {
-    pub id: i32,
-    pub name: String,
-    pub description: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Role {
-    pub id: i32,
-    pub name: String,
-    pub product_id: i32,
-}
-
-#[derive(serde::Serialize, Debug)]
-pub struct CreateRoleRequest {
-    pub name: String,
-    pub permissions: Vec<PermissionId>,
-}
-
-#[derive(Serialize, Debug)]
-pub struct PermissionId {
-    pub id: i32,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Credentials {
-    pub id: i32,
-    pub clientid: String,
-    pub appname: Option<String>,
-    pub label: Option<String>,
-    pub environment: Option<String>,
-    pub is_active: bool,
-    pub createdat: String,
-    pub updatedat: String,
-    pub appid: Option<i32>,
-    pub org_uuid: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct CredentialsDetails {
-    pub id: i32,
-    pub clientid: String,
-    pub appname: Option<String>,
-    pub appid: Option<i32>,
-    pub org_uuid: Option<String>,
-    pub label: Option<String>,
-    pub environment: Option<String>,
-    pub is_active: bool,
-    pub createdat: String,
-    pub updatedat: String,
-    pub credentials: serde_json::Value,
-}
-
-#[derive(Serialize, Debug)]
-pub struct CreateCredentialsRequest<'a> {
-    pub provider: &'a str,
-    pub credentials: serde_json::Value,
-    pub label: Option<&'a str>,
-    pub environment: Option<&'a str>,
-    pub appid: Option<i32>,
-    pub appname: Option<&'a str>,
-    pub is_active: Option<bool>,
-}
-
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateCredentialsRequest<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credentials: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub environment: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub appid: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub appname: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_active: Option<bool>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct HelpCategory {
-    pub id: i32,
-    pub name: String,
-    pub slug: String,
+    pub kind: String,
+    pub amount_cents: i64,
     pub description: Option<String>,
-    pub display_order: i32,
-    pub visibility: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct HelpArticle {
-    pub id: i32,
-    pub category_id: Option<i32>,
-    pub title: String,
-    pub slug: String,
-    pub summary: Option<String>,
-    pub body_markdown: String,
-    pub body_html: Option<String>,
-    pub status: String,
-    pub tags: Option<Vec<String>>,
-    pub author_id: Option<i32>,
-    pub editor_id: Option<i32>,
-    pub published_at: Option<String>,
     pub created_at: String,
-    pub updated_at: String,
-    pub help_category: Option<HelpCategory>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct Organization {
-    pub id: i32,
-    pub org_uuid: String,
-    pub name: String,
-    pub org_display_name: String,
-    pub app_uuid: String,
-    pub icon_url: Option<String>,
-}
+// ── Subscriptions ─────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Debug)]
-pub struct Team {
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubscriptionItem {
     pub id: i32,
-    pub team_uuid: String,
-    pub org_uuid: String,
-    pub name: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ApiKey {
-    pub id: i32,
-    pub key_uuid: String,
-    pub org_uuid: String,
-    pub name: String,
-    pub access_key: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct OrgAddress {
-    pub id: i32,
-    pub org_uuid: String,
-    pub street: String,
-    pub city: String,
-    pub state: String,
-    pub zip: String,
-    pub country: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Subscription {
-    pub id: i32,
-    pub user_id: i32,
-    pub user_uuid: Option<String>,
+    pub user_uuid: Option<Uuid>,
     pub price_id: Option<i32>,
     pub provider: String,
     pub provider_subscription_id: String,
@@ -222,15 +115,153 @@ pub struct Subscription {
     pub updated_at: String,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct UserAccount {
+// ── Pricing ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PricingPreviewRequest {
+    pub price_id: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coupon_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seats: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PricingPreview {
+    pub amount_cents: i64,
+    pub currency: String,
+    pub discount_cents: Option<i64>,
+    pub tax_cents: Option<i64>,
+    pub final_cents: i64,
+    pub region_resolved: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckoutSessionRequest {
+    pub price_id: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CheckoutSession {
+    pub payment_url: String,
+    pub session_id: Option<String>,
+    pub provider: String,
+}
+
+// ── Usage reporting ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageEvent {
+    pub metric: String,
+    pub quantity: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org_uuid: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_uuid: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AnalyticsEvent {
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+// ── Teams ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TeamItem {
     pub id: i32,
-    pub account_uuid: String,
-    pub device_uuid: String,
-    pub email: String,
-    pub org_name: String,
+    pub team_uuid: Uuid,
     pub org_uuid: String,
-    pub user_uuid: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+// ── App management ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppEntry {
+    pub app_uuid: Uuid,
+    pub app_name: String,
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppCredentialInfo {
+    pub environment: String,
+    pub client_id: String,
+    pub client_secret_prefix: Option<String>,
+    pub is_active: bool,
+    pub created_at: Option<String>,
+    pub rotated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppCredentialsResponse {
+    pub app_name: String,
+    pub sandbox_enabled: bool,
+    pub live: Option<AppCredentialInfo>,
+    pub sandbox: Option<AppCredentialInfo>,
+}
+
+// ── Orgs ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrgEntry {
+    pub org_uuid: Uuid,
+    pub org_name: String,
+    pub role: Option<String>,
+}
+
+// ── Billing ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Invoice {
+    pub id: i32,
+    pub user_id: i32,
+    pub subscription_id: Option<i32>,
+    pub provider: String,
+    pub provider_invoice_id: String,
+    pub amount: i32,
+    pub status: String,
+    pub invoice_pdf_url: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ── Error response shapes ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(crate) struct ApiErrorBody {
+    #[serde(default)]
+    pub error: Option<ApiErrorDetail>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ApiErrorDetail {
+    pub message: String,
+    pub code: Option<String>,
+}
+
+// ── Generic data wrapper ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub(crate) struct DataWrapper<T> {
+    pub data: T,
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
