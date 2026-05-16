@@ -5,8 +5,15 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::models::{
-    ButtrBaseErrorResponse, CheckoutResponse, Credentials, CredentialsDetails, CreateCredentialsRequest,
-    Invoice, LoginResponse, Profile, UpdateCredentialsRequest,
+    AdminPortalToken, AuditEvent, AuthEvent, ButtrBaseErrorResponse, Certificate,
+    CertificateAuthority, CheckoutResponse, Coupon, CreateCredentialsRequest,
+    CreateDeviceAccountRequest, CreatePaymentCheckoutRequest, CreateSsoConnectionRequest,
+    Credentials, CredentialsDetails, Domain, EntitlementCheckRequest, EntitlementCheckResponse,
+    GiftCardValidation, Invoice, JitGrant, LoginResponse, MfaEnrollResponse, MfaStatusResponse,
+    OrgFeature, PaymentCheckoutSession, Profile, RecoveryCodesResponse, RegisterRequest,
+    SecretEntry, SecretValue, SendInvoiceRequest, SendInvoiceResponse, SendSmsRequest,
+    SessionInfo, SigningAuditEntry, SigningKey, SsoConnection, UpdateCredentialsRequest,
+    UserAccount, VerifyEmailIdentityRequest, WebhookDelivery, WebhookEndpoint,
 };
 
 #[derive(Error, Debug)]
@@ -553,8 +560,1849 @@ impl ButtrBaseClient {
         self.request(Method::GET, "/api/v2/notifications", None::<&()>).await
     }
 
-    // Blog methods removed: CMS lives at metaphone.app — use the
-    // `metaphone-sdk` crate (forthcoming) instead.
+    // ── Registration ─────────────────────────────────────────────────────────
+
+    pub async fn register(
+        &self,
+        data: &RegisterRequest<'_>,
+    ) -> Result<LoginResponse, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/auth/register", Some(data))
+            .await
+    }
+
+    pub async fn get_login_options(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/organizations/{}/login-options", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn get_org_by_domain(
+        &self,
+        domain: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/orgs-by-domain/{}", domain),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── OIDC / SAML SSO ──────────────────────────────────────────────────────
+
+    pub async fn oidc_authorize_url(
+        &self,
+        connection_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/oidc/{}/authorize", connection_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn oidc_callback(
+        &self,
+        params: &HashMap<String, String>,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let qs: String = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.request(
+            Method::GET,
+            &format!("/api/auth/oidc/callback?{}", qs),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn saml_authorize_url(
+        &self,
+        connection_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/saml/{}/authorize", connection_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn saml_callback(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/auth/saml/callback", Some(payload))
+            .await
+    }
+
+    // ── Magic Link v2 ────────────────────────────────────────────────────────
+
+    pub async fn magic_link_send(
+        &self,
+        email: &str,
+        redirect_url: Option<&str>,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let mut body = serde_json::json!({ "email": email });
+        if let Some(url) = redirect_url {
+            body["redirect_url"] = Value::String(url.to_string());
+        }
+        self.request(Method::POST, "/api/auth/magic-link/send", Some(&body))
+            .await
+    }
+
+    pub async fn magic_link_verify(
+        &self,
+        token: &str,
+    ) -> Result<LoginResponse, ButtrBaseClientError> {
+        let body = serde_json::json!({ "token": token });
+        self.request(Method::POST, "/api/auth/magic-link/verify", Some(&body))
+            .await
+    }
+
+    // ── OTP v2 (passwordless phone) ──────────────────────────────────────────
+
+    pub async fn otp_send(&self, phone: &str) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "phone": phone });
+        self.request(Method::POST, "/api/auth/otp/send", Some(&body))
+            .await
+    }
+
+    pub async fn otp_verify_code(
+        &self,
+        phone: &str,
+        code: &str,
+    ) -> Result<LoginResponse, ButtrBaseClientError> {
+        let body = serde_json::json!({ "phone": phone, "code": code });
+        self.request(Method::POST, "/api/auth/otp/verify", Some(&body))
+            .await
+    }
+
+    // ── MFA / TOTP ───────────────────────────────────────────────────────────
+
+    pub async fn mfa_status(&self) -> Result<MfaStatusResponse, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/auth/mfa/status", None::<&()>)
+            .await
+    }
+
+    pub async fn mfa_totp_enroll(&self) -> Result<MfaEnrollResponse, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/auth/mfa/totp/enroll", None::<&()>)
+            .await
+    }
+
+    pub async fn mfa_totp_activate(
+        &self,
+        code: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "code": code });
+        self.request(Method::POST, "/api/auth/mfa/totp/activate", Some(&body))
+            .await
+    }
+
+    pub async fn mfa_totp_verify(
+        &self,
+        code: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "code": code });
+        self.request(Method::POST, "/api/auth/mfa/totp/verify", Some(&body))
+            .await
+    }
+
+    pub async fn mfa_totp_challenge(&self) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/auth/mfa/totp/challenge", None::<&()>)
+            .await
+    }
+
+    pub async fn mfa_totp_disable(&self) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::DELETE, "/api/auth/mfa/totp", None::<&()>)
+            .await
+    }
+
+    pub async fn mfa_generate_recovery_codes(
+        &self,
+    ) -> Result<RecoveryCodesResponse, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/auth/mfa/recovery-codes",
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn mfa_redeem_recovery_code(
+        &self,
+        code: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "code": code });
+        self.request(
+            Method::POST,
+            "/api/auth/mfa/recovery-codes/redeem",
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn auth_step_up(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/auth/step-up", Some(payload))
+            .await
+    }
+
+    // ── Organization Security ────────────────────────────────────────────────
+
+    pub async fn get_security_settings(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/security-settings", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn update_security_settings(
+        &self,
+        org_uuid: &str,
+        settings: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::PUT,
+            &format!("/api/organizations/{}/security-settings", org_uuid),
+            Some(settings),
+        )
+        .await
+    }
+
+    pub async fn list_sso_connections(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<SsoConnection>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/sso-connections", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_sso_connection(
+        &self,
+        org_uuid: &str,
+        data: &CreateSsoConnectionRequest<'_>,
+    ) -> Result<SsoConnection, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/organizations/{}/sso-connections", org_uuid),
+            Some(data),
+        )
+        .await
+    }
+
+    pub async fn update_sso_connection(
+        &self,
+        org_uuid: &str,
+        connection_uuid: &str,
+        data: &Value,
+    ) -> Result<SsoConnection, ButtrBaseClientError> {
+        self.request(
+            Method::PUT,
+            &format!(
+                "/api/organizations/{}/sso-connections/{}",
+                org_uuid, connection_uuid
+            ),
+            Some(data),
+        )
+        .await
+    }
+
+    pub async fn delete_sso_connection(
+        &self,
+        org_uuid: &str,
+        connection_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/api/organizations/{}/sso-connections/{}",
+                org_uuid, connection_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_audit_events(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<AuditEvent>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/audit-events", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn export_audit_events(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/audit-events/export", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Branding ─────────────────────────────────────────────────────────────
+
+    pub async fn get_branding(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/branding", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn update_branding(
+        &self,
+        org_uuid: &str,
+        branding: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::PUT,
+            &format!("/api/organizations/{}/branding", org_uuid),
+            Some(branding),
+        )
+        .await
+    }
+
+    pub async fn upload_org_logo(
+        &self,
+        org_uuid: &str,
+        logo: Vec<u8>,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let part = reqwest::multipart::Part::bytes(logo);
+        let form = reqwest::multipart::Form::new().part("logo", part);
+        let url = format!(
+            "{}/api/organizations/{}/branding/logo",
+            self.base_url, org_uuid
+        );
+        let mut req = self.client.post(&url).multipart(form);
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
+        }
+        let response = req.send().await?;
+        self.handle_response(response).await
+    }
+
+    // ── Sessions ─────────────────────────────────────────────────────────────
+
+    pub async fn org_session_inventory(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<SessionInfo>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/session-inventory", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn org_revoke_all_sessions(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/organizations/{}/revoke-all-sessions", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_device_accounts(
+        &self,
+        device_uuid: &str,
+    ) -> Result<Vec<UserAccount>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/devices/{}/accounts", device_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn add_device_account(
+        &self,
+        device_uuid: &str,
+        data: &CreateDeviceAccountRequest<'_>,
+    ) -> Result<UserAccount, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/devices/{}/accounts", device_uuid),
+            Some(data),
+        )
+        .await
+    }
+
+    pub async fn delete_device_accounts(
+        &self,
+        device_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/devices/{}/accounts", device_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn add_device_accounts_bulk(
+        &self,
+        device_uuid: &str,
+        accounts: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/devices/{}/accounts/bulk", device_uuid),
+            Some(accounts),
+        )
+        .await
+    }
+
+    pub async fn create_device_accounts_bulk(
+        &self,
+        accounts: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/devices/accounts/bulk",
+            Some(accounts),
+        )
+        .await
+    }
+
+    pub async fn delete_device_account(
+        &self,
+        device_uuid: &str,
+        account_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/devices/{}/accounts/{}", device_uuid, account_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn switch_device_active_account(
+        &self,
+        device_uuid: &str,
+        account_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "account_uuid": account_uuid });
+        self.request(
+            Method::POST,
+            &format!("/api/devices/{}/active-account", device_uuid),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn device_session_inventory(
+        &self,
+        device_uuid: &str,
+    ) -> Result<Vec<SessionInfo>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/devices/{}/session-inventory", device_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn revoke_all_device_sessions(
+        &self,
+        device_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/devices/{}/revoke-all", device_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── API Keys v2 ──────────────────────────────────────────────────────────
+
+    pub async fn list_api_keys_v2(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<crate::models::ApiKey>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/v2/organizations/{}/api-keys", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_api_key_v2(
+        &self,
+        org_uuid: &str,
+        name: &str,
+    ) -> Result<crate::models::ApiKey, ButtrBaseClientError> {
+        let body = serde_json::json!({ "name": name });
+        self.request(
+            Method::POST,
+            &format!("/api/v2/organizations/{}/api-keys", org_uuid),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn delete_api_key_v2(
+        &self,
+        org_uuid: &str,
+        key_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/v2/organizations/{}/api-keys/{}", org_uuid, key_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Service Identities ───────────────────────────────────────────────────
+
+    pub async fn list_service_identities(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<Value>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/service-identities", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_service_identity(
+        &self,
+        org_uuid: &str,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/organizations/{}/service-identities", org_uuid),
+            Some(payload),
+        )
+        .await
+    }
+
+    pub async fn delete_service_identity(
+        &self,
+        org_uuid: &str,
+        key_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/api/organizations/{}/service-identities/{}",
+                org_uuid, key_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_service_identity_automation_token(
+        &self,
+        org_uuid: &str,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/organizations/{}/service-identities/automation-token",
+                org_uuid
+            ),
+            Some(payload),
+        )
+        .await
+    }
+
+    // ── Entitlements ─────────────────────────────────────────────────────────
+
+    pub async fn entitlements_check(
+        &self,
+        data: &EntitlementCheckRequest<'_>,
+    ) -> Result<EntitlementCheckResponse, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/entitlements/check", Some(data))
+            .await
+    }
+
+    pub async fn entitlements_check_batch(
+        &self,
+        checks: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/entitlements/check/batch", Some(checks))
+            .await
+    }
+
+    pub async fn entitlements_effective(&self) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/entitlements/effective", None::<&()>)
+            .await
+    }
+
+    pub async fn admin_entitlements_explain(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/admin/entitlements/explain",
+            Some(payload),
+        )
+        .await
+    }
+
+    // ── Pricing ──────────────────────────────────────────────────────────────
+
+    pub async fn pricing_preview(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/pricing/preview", Some(payload))
+            .await
+    }
+
+    pub async fn pricing_quote(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/pricing/quote", Some(payload))
+            .await
+    }
+
+    pub async fn pricing_checkout_session(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/pricing/checkout-session",
+            Some(payload),
+        )
+        .await
+    }
+
+    pub async fn admin_pricing_explain(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/admin/pricing/explain",
+            Some(payload),
+        )
+        .await
+    }
+
+    pub async fn catalog_pricing_preview(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/catalog/pricing/preview",
+            Some(payload),
+        )
+        .await
+    }
+
+    // ── Coupons (Admin) ──────────────────────────────────────────────────────
+
+    pub async fn admin_list_product_coupons(
+        &self,
+        product_id: &str,
+    ) -> Result<Vec<Coupon>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/products/{}/coupons", product_id),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn admin_create_product_coupon(
+        &self,
+        product_id: &str,
+        coupon: &Coupon,
+    ) -> Result<Coupon, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/admin/products/{}/coupons", product_id),
+            Some(coupon),
+        )
+        .await
+    }
+
+    pub async fn admin_update_product_coupon(
+        &self,
+        product_id: &str,
+        coupon_id: &str,
+        coupon: &Coupon,
+    ) -> Result<Coupon, ButtrBaseClientError> {
+        self.request(
+            Method::PUT,
+            &format!(
+                "/api/admin/products/{}/coupons/{}",
+                product_id, coupon_id
+            ),
+            Some(coupon),
+        )
+        .await
+    }
+
+    pub async fn admin_delete_product_coupon(
+        &self,
+        product_id: &str,
+        coupon_id: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/api/admin/products/{}/coupons/{}",
+                product_id, coupon_id
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Coupons / Gift Cards (Public) ────────────────────────────────────────
+
+    pub async fn validate_coupon(
+        &self,
+        code: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "code": code });
+        self.request(Method::POST, "/api/coupons/validate", Some(&body))
+            .await
+    }
+
+    pub async fn validate_gift_card(
+        &self,
+        code: &str,
+    ) -> Result<GiftCardValidation, ButtrBaseClientError> {
+        let body = serde_json::json!({ "code": code });
+        self.request(Method::POST, "/api/gift-cards/validate", Some(&body))
+            .await
+    }
+
+    pub async fn redeem_gift_card(
+        &self,
+        code: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "code": code });
+        self.request(Method::POST, "/api/gift-cards/redeem", Some(&body))
+            .await
+    }
+
+    // ── Labels ───────────────────────────────────────────────────────────────
+
+    pub async fn set_coupon_labels(
+        &self,
+        coupon_id: &str,
+        labels: &[&str],
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "labels": labels });
+        self.request(
+            Method::PUT,
+            &format!("/api/admin/coupons/{}/labels", coupon_id),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn add_coupon_label(
+        &self,
+        coupon_id: &str,
+        label: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "label": label });
+        self.request(
+            Method::POST,
+            &format!("/api/admin/coupons/{}/labels", coupon_id),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn remove_coupon_label(
+        &self,
+        coupon_id: &str,
+        label: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/admin/coupons/{}/labels/{}", coupon_id, label),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn set_product_tags(
+        &self,
+        product_id: &str,
+        tags: &[&str],
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "tags": tags });
+        self.request(
+            Method::PUT,
+            &format!("/api/admin/products/{}/tags", product_id),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn add_product_tag(
+        &self,
+        product_id: &str,
+        tag: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "tag": tag });
+        self.request(
+            Method::POST,
+            &format!("/api/admin/products/{}/tags", product_id),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn remove_product_tag(
+        &self,
+        product_id: &str,
+        tag: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/admin/products/{}/tags/{}", product_id, tag),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Analytics ────────────────────────────────────────────────────────────
+
+    pub async fn ingest_analytics_event(
+        &self,
+        event: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/analytics/events", Some(event))
+            .await
+    }
+
+    pub async fn analytics_app_overview(
+        &self,
+        app_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/analytics/apps/{}/overview", app_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn analytics_org_overview(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/analytics/organizations/{}/overview", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Teams (expanded) ─────────────────────────────────────────────────────
+
+    pub async fn create_team(
+        &self,
+        payload: &Value,
+    ) -> Result<crate::models::Team, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/teams", Some(payload))
+            .await
+    }
+
+    pub async fn list_org_teams(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<crate::models::Team>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/teams", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_inactive_teams(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<crate::models::Team>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/teams/org/{}/inactive", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn reactivate_team(
+        &self,
+        team_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/teams/lifecycle/{}/reactivate", team_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn archive_team(
+        &self,
+        team_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/teams/lifecycle/{}", team_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_team_members(
+        &self,
+        team_uuid: &str,
+    ) -> Result<Vec<Value>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/teams/{}/members", team_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn add_team_member(
+        &self,
+        team_uuid: &str,
+        user_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "user_uuid": user_uuid });
+        self.request(
+            Method::POST,
+            &format!("/api/teams/{}/members", team_uuid),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn remove_team_member(
+        &self,
+        team_uuid: &str,
+        user_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/teams/{}/members/{}", team_uuid, user_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_team_observers(
+        &self,
+        team_uuid: &str,
+    ) -> Result<Vec<Value>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/teams/{}/observers", team_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn add_team_observer(
+        &self,
+        team_uuid: &str,
+        user_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "user_uuid": user_uuid });
+        self.request(
+            Method::POST,
+            &format!("/api/teams/{}/observers", team_uuid),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn remove_team_observer(
+        &self,
+        team_uuid: &str,
+        user_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/teams/{}/observers/{}", team_uuid, user_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn get_user_teams_list(
+        &self,
+        user_uuid: &str,
+    ) -> Result<Vec<crate::models::Team>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/users/{}/teams", user_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn get_user_observed_teams(
+        &self,
+        user_uuid: &str,
+    ) -> Result<Vec<crate::models::Team>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/users/{}/observed-teams", user_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Org Features ─────────────────────────────────────────────────────────
+
+    pub async fn list_org_features(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<OrgFeature>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/organizations/{}/features", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn set_org_feature(
+        &self,
+        org_uuid: &str,
+        feature: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/organizations/{}/features", org_uuid),
+            Some(feature),
+        )
+        .await
+    }
+
+    pub async fn remove_org_feature(
+        &self,
+        org_uuid: &str,
+        feature_id: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/organizations/{}/features/{}", org_uuid, feature_id),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Roles ────────────────────────────────────────────────────────────────
+
+    pub async fn list_roles(&self) -> Result<Vec<crate::models::Role>, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/roles", None::<&()>).await
+    }
+
+    pub async fn list_all_permissions(
+        &self,
+    ) -> Result<Vec<crate::models::Permission>, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/roles/permissions", None::<&()>)
+            .await
+    }
+
+    pub async fn get_role_permissions(
+        &self,
+        role_id: i32,
+    ) -> Result<Vec<crate::models::Permission>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/roles/{}/permissions", role_id),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn update_role_permissions(
+        &self,
+        role_id: i32,
+        permissions: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::PUT,
+            &format!("/api/roles/{}/permissions", role_id),
+            Some(permissions),
+        )
+        .await
+    }
+
+    // ── Environments ─────────────────────────────────────────────────────────
+
+    pub async fn list_environments(&self) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/environments", None::<&()>)
+            .await
+    }
+
+    // ── Plaid ────────────────────────────────────────────────────────────────
+
+    pub async fn plaid_create_link_token(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/plaid/create-link-token",
+            Some(payload),
+        )
+        .await
+    }
+
+    pub async fn plaid_exchange_public_token(
+        &self,
+        public_token: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "public_token": public_token });
+        self.request(
+            Method::POST,
+            "/api/plaid/exchange-public-token",
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn plaid_accounts(&self) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/plaid/accounts", None::<&()>)
+            .await
+    }
+
+    // ── Usage ────────────────────────────────────────────────────────────────
+
+    pub async fn usage_report(
+        &self,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/usage/report", Some(payload))
+            .await
+    }
+
+    // ── Help ─────────────────────────────────────────────────────────────────
+
+    pub async fn help_root(&self) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/help", None::<&()>).await
+    }
+
+    pub async fn help_search(
+        &self,
+        query: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/help/search?q={}", urlencoding::encode(query)),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn help_category(
+        &self,
+        slug: &str,
+    ) -> Result<crate::models::HelpCategory, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/help/categories/{}", slug),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn help_article(
+        &self,
+        slug: &str,
+    ) -> Result<crate::models::HelpArticle, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/help/articles/{}", slug),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Wallet ───────────────────────────────────────────────────────────────
+
+    pub async fn wallet(&self) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/wallet", None::<&()>).await
+    }
+
+    // ── Admin: Signing Keys ──────────────────────────────────────────────────
+
+    pub async fn list_signing_keys(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<SigningKey>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/signing-keys", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn rotate_signing_keys(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/signing-keys/rotate",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_signing_audit(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<SigningAuditEntry>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/signing-audit", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn sign_payload(
+        &self,
+        org_uuid: &str,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/orgs/{}/sign", org_uuid),
+            Some(payload),
+        )
+        .await
+    }
+
+    pub async fn sign_document(
+        &self,
+        org_uuid: &str,
+        document: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/orgs/{}/sign-document", org_uuid),
+            Some(document),
+        )
+        .await
+    }
+
+    // ── Admin: mTLS Certificate Authority ────────────────────────────────────
+
+    pub async fn get_ca(
+        &self,
+        org_uuid: &str,
+    ) -> Result<CertificateAuthority, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!(
+                "/api/admin/organizations/{}/certificate-authority",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn init_ca(
+        &self,
+        org_uuid: &str,
+        config: &Value,
+    ) -> Result<CertificateAuthority, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/certificate-authority/init",
+                org_uuid
+            ),
+            Some(config),
+        )
+        .await
+    }
+
+    pub async fn list_certificates(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<Certificate>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/certificates", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn issue_certificate(
+        &self,
+        org_uuid: &str,
+        csr: &Value,
+    ) -> Result<Certificate, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/admin/organizations/{}/certificates", org_uuid),
+            Some(csr),
+        )
+        .await
+    }
+
+    pub async fn revoke_certificate(
+        &self,
+        org_uuid: &str,
+        serial: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/certificates/{}/revoke",
+                org_uuid, serial
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Admin: Zero Trust ────────────────────────────────────────────────────
+
+    pub async fn revoke_jti(
+        &self,
+        jti: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "jti": jti });
+        self.request(
+            Method::POST,
+            "/api/admin/sessions/revoke",
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn org_metrics(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/metrics", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn re_encrypt_secrets(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/secrets/re-encrypt",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn re_encrypt_signing_keys(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/signing-keys/re-encrypt",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn re_encrypt_mtls_ca(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/mtls-ca/re-encrypt",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_auth_events(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<AuthEvent>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/auth-events", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn purge_auth_events(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/auth-events/purge",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn kms_status(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/kms-status", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn saml_cert_rollover(
+        &self,
+        org_uuid: &str,
+        connection_uuid: &str,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::PATCH,
+            &format!(
+                "/api/admin/organizations/{}/sso/{}/saml-cert",
+                org_uuid, connection_uuid
+            ),
+            Some(payload),
+        )
+        .await
+    }
+
+    pub async fn update_payment_settings(
+        &self,
+        org_uuid: &str,
+        settings: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::PATCH,
+            &format!(
+                "/api/admin/organizations/{}/payment-settings",
+                org_uuid
+            ),
+            Some(settings),
+        )
+        .await
+    }
+
+    // ── Admin: JIT Elevation ─────────────────────────────────────────────────
+
+    pub async fn jit_request_grant(
+        &self,
+        org_uuid: &str,
+        payload: &Value,
+    ) -> Result<JitGrant, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/elevation/request",
+                org_uuid
+            ),
+            Some(payload),
+        )
+        .await
+    }
+
+    pub async fn jit_approve_grant(
+        &self,
+        org_uuid: &str,
+        grant_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/elevation/{}/approve",
+                org_uuid, grant_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn jit_list_grants(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<JitGrant>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/elevation", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Admin: SPIFFE ────────────────────────────────────────────────────────
+
+    pub async fn issue_svid(
+        &self,
+        org_uuid: &str,
+        payload: &Value,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/admin/organizations/{}/spiffe/svid", org_uuid),
+            Some(payload),
+        )
+        .await
+    }
+
+    // ── Admin: Secrets Vault ─────────────────────────────────────────────────
+
+    pub async fn list_secrets(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<SecretEntry>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/secrets", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn put_secret(
+        &self,
+        org_uuid: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "value": value });
+        self.request(
+            Method::PUT,
+            &format!("/api/admin/organizations/{}/secrets/{}", org_uuid, name),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn delete_secret(
+        &self,
+        org_uuid: &str,
+        name: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/admin/organizations/{}/secrets/{}", org_uuid, name),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn get_secret(
+        &self,
+        org_uuid: &str,
+        name: &str,
+    ) -> Result<SecretValue, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/orgs/{}/secrets/{}", org_uuid, name),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Admin: Portal ────────────────────────────────────────────────────────
+
+    pub async fn admin_portal_issue(
+        &self,
+        org_uuid: &str,
+    ) -> Result<AdminPortalToken, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/admin-portal/issue",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn admin_portal_exchange(
+        &self,
+        token: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        let body = serde_json::json!({ "token": token });
+        self.request(
+            Method::POST,
+            "/api/admin-portal/exchange",
+            Some(&body),
+        )
+        .await
+    }
+
+    // ── Admin: Domains ───────────────────────────────────────────────────────
+
+    pub async fn list_domains(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<Domain>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/admin/organizations/{}/domains", org_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_domain(
+        &self,
+        org_uuid: &str,
+        domain: &str,
+    ) -> Result<Domain, ButtrBaseClientError> {
+        let body = serde_json::json!({ "domain": domain });
+        self.request(
+            Method::POST,
+            &format!("/api/admin/organizations/{}/domains", org_uuid),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn verify_domain(
+        &self,
+        org_uuid: &str,
+        domain_id: i32,
+    ) -> Result<Domain, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/domains/{}/verify",
+                org_uuid, domain_id
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn delete_domain(
+        &self,
+        org_uuid: &str,
+        domain_id: i32,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/api/admin/organizations/{}/domains/{}",
+                org_uuid, domain_id
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Admin: Webhooks ──────────────────────────────────────────────────────
+
+    pub async fn list_webhook_endpoints(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<WebhookEndpoint>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!(
+                "/api/admin/organizations/{}/webhook-endpoints",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_webhook_endpoint(
+        &self,
+        org_uuid: &str,
+        url: &str,
+        events: &[&str],
+    ) -> Result<WebhookEndpoint, ButtrBaseClientError> {
+        let body = serde_json::json!({ "url": url, "events": events });
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/webhook-endpoints",
+                org_uuid
+            ),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn delete_webhook_endpoint(
+        &self,
+        org_uuid: &str,
+        endpoint_id: i32,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/api/admin/organizations/{}/webhook-endpoints/{}",
+                org_uuid, endpoint_id
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn list_webhook_deliveries(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<WebhookDelivery>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!(
+                "/api/admin/organizations/{}/webhook-deliveries",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Admin: SCIM Tokens ───────────────────────────────────────────────────
+
+    pub async fn issue_scim_token(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/admin/organizations/{}/scim-tokens",
+                org_uuid
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Payments ─────────────────────────────────────────────────────────────
+
+    pub async fn create_payment_checkout(
+        &self,
+        data: &CreatePaymentCheckoutRequest<'_>,
+    ) -> Result<PaymentCheckoutSession, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/payments/checkout", Some(data))
+            .await
+    }
+
+    pub async fn send_invoice(
+        &self,
+        data: &SendInvoiceRequest<'_>,
+    ) -> Result<SendInvoiceResponse, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/payments/invoices/send",
+            Some(data),
+        )
+        .await
+    }
+
+    // ── SMS ──────────────────────────────────────────────────────────────────
+
+    pub async fn send_sms(
+        &self,
+        data: &SendSmsRequest<'_>,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/sms/send_sms", Some(data))
+            .await
+    }
+
+    // ── Email ────────────────────────────────────────────────────────────────
+
+    pub async fn verify_email_identity(
+        &self,
+        data: &VerifyEmailIdentityRequest<'_>,
+    ) -> Result<Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/email/verify-identity",
+            Some(data),
+        )
+        .await
+    }
 
     // Custom Variables
     pub async fn get_custom_variable(&self, key: &str) -> Result<serde_json::Value, ButtrBaseClientError> {
