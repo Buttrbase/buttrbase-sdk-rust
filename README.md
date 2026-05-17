@@ -791,6 +791,104 @@ if FormatNegotiator::is_binary(&response_headers) {
 - [buttrbase-sdk-node](https://github.com/Buttrbase/buttrbase-sdk-node)
 - [buttrbase-sdk-go](https://github.com/Buttrbase/buttrbase-sdk-go)
 
+## Recipes
+
+### Complete Onboarding
+
+```rust
+use buttrbase_sdk::client::ButtrBaseClient;
+use buttrbase_sdk::models::RegisterRequest;
+
+let mut client = ButtrBaseClient::new("https://api.buttrbase.com".into());
+
+// 1. Register and login
+client.register(&RegisterRequest {
+    email: "admin@acme.com", password: "s3cur3!", org_name: "Acme Corp",
+    first_name: Some("Alice"), last_name: None,
+}).await?;
+client.login("admin@acme.com", "s3cur3!", "Acme Corp").await?;
+
+// 2. Get profile
+let profile = client.get_profile().await?;
+
+// 3. Create a team and add a member
+let team = client.create_team(&serde_json::json!({
+    "name": "Engineering", "org_uuid": "org-uuid"
+})).await?;
+client.add_team_member("team-uuid", "colleague-uuid").await?;
+```
+
+### MFA Enrollment
+
+```rust
+// 1. Check MFA status
+let status = client.mfa_status().await?;
+
+// 2. Enroll in TOTP — returns secret + QR URL
+let enrollment = client.mfa_totp_enroll().await?;
+println!("Scan this QR: {}", enrollment.qr_code_url);
+
+// 3. Activate with code from authenticator app
+client.mfa_totp_activate("123456").await?;
+
+// 4. Generate recovery codes
+let codes = client.mfa_generate_recovery_codes().await?;
+```
+
+### Checkout Flow
+
+```rust
+// 1. Preview pricing
+let preview = client.pricing_preview(&serde_json::json!({
+    "plan": "pro", "seats": 10
+})).await?;
+
+// 2. Check entitlement
+let check = client.entitlements_check(&EntitlementCheckRequest {
+    feature: "advanced-analytics", org_uuid: Some("org-uuid"),
+}).await?;
+
+// 3. Create checkout session
+let session = client.pricing_checkout_session(&serde_json::json!({
+    "plan": "pro", "seats": 10
+})).await?;
+```
+
+### SSO Setup
+
+```rust
+use buttrbase_sdk::models::CreateSsoConnectionRequest;
+
+// 1. Create an OIDC connection
+let conn = client.create_sso_connection("org-uuid", &CreateSsoConnectionRequest {
+    provider: "okta", name: "Okta SSO",
+    config: serde_json::json!({"domain": "myorg.okta.com"}),
+}).await?;
+
+// 2. Get the authorize URL
+let auth = client.oidc_authorize_url("conn-uuid").await?;
+
+// 3. Handle callback
+let mut params = std::collections::HashMap::new();
+params.insert("code".into(), "auth-code".into());
+let result = client.oidc_callback(&params).await?;
+```
+
+### Secrets & Key Management
+
+```rust
+// 1. Store a secret
+client.put_secret("org-uuid", "DATABASE_URL", "postgres://...").await?;
+
+// 2. List and retrieve secrets
+let secrets = client.list_secrets("org-uuid").await?;
+let secret = client.get_secret("org-uuid", "DATABASE_URL").await?;
+
+// 3. Rotate signing keys
+client.rotate_signing_keys("org-uuid").await?;
+let audit = client.list_signing_audit("org-uuid").await?;
+```
+
 ## Docs
 
 See https://buttrbase.com/docs for the full API reference.
