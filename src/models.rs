@@ -524,3 +524,76 @@ pub struct OrgFeature {
     pub feature_id: String,
     pub enabled: bool,
 }
+
+// ── Invite-based registration ─────────────────────────────────────────────────
+
+#[derive(Serialize, Debug, Clone)]
+pub struct InviteAcceptRequest<'a> {
+    pub token:      &'a str,
+    pub first_name: &'a str,
+    pub last_name:  &'a str,
+    pub username:   &'a str,
+    pub password:   &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone: Option<&'a str>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct InviteAcceptResponse {
+    pub user_uuid:     String,
+    pub org_uuid:      String,
+    pub role:          String,
+    pub access_token:  String,
+    pub refresh_token: String,
+    pub token_type:    String,
+    pub expires_in:    i64,
+    pub message:       String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct OrgCheckResponse {
+    pub name:      String,
+    pub available: bool,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct SuperuserResponse {
+    pub email:        String,
+    pub is_superuser: bool,
+}
+
+// ── Contact forms ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Debug, Clone)]
+pub struct ContactRequest<'a> {
+    pub name:    &'a str,
+    pub email:   &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company: Option<&'a str>,
+    pub message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id:  Option<&'a str>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct ContactUsRequest<'a> {
+    pub name:    &'a str,
+    pub email:   &'a str,
+    pub subject: &'a str,
+    pub message: &'a str,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ContactSubmitResponse {
+    pub message:      String,
+    pub reference_id: String,
+}
+
+// ── Geo / IP ──────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct GeoResponse {
+    pub ip:       String,
+    pub country:  String,
+    pub timezone: String,
+}

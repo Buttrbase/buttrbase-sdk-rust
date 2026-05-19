@@ -2564,4 +2564,72 @@ impl ButtrBaseClient {
             })
         }
     }
+
+    // ── Invite-based registration ─────────────────────────────────────────────
+
+    /// Accept an invitation and create a user account.
+    /// No authentication required — the `token` in the payload acts as the credential.
+    pub async fn invite_accept(
+        &self,
+        data: &crate::models::InviteAcceptRequest<'_>,
+    ) -> Result<crate::models::InviteAcceptResponse, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/auth/invite/accept", Some(data))
+            .await
+    }
+
+    /// Check whether an organisation name is available (case-sensitive).
+    pub async fn check_org_name(
+        &self,
+        name: &str,
+    ) -> Result<crate::models::OrgCheckResponse, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/orgs/check?name={}", urlencoding::encode(name)),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Look up the superuser flag for a given email address.
+    /// Requires platform-admin authentication.
+    pub async fn get_superuser_flag(
+        &self,
+        email: &str,
+    ) -> Result<crate::models::SuperuserResponse, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/superuser?email={}", urlencoding::encode(email)),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Contact forms ─────────────────────────────────────────────────────────
+
+    /// Submit an account / sales enquiry form.
+    pub async fn post_contact(
+        &self,
+        data: &crate::models::ContactRequest<'_>,
+    ) -> Result<crate::models::ContactSubmitResponse, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/contact", Some(data))
+            .await
+    }
+
+    /// Submit a general contact-us form.
+    pub async fn post_contact_us(
+        &self,
+        data: &crate::models::ContactUsRequest<'_>,
+    ) -> Result<crate::models::ContactSubmitResponse, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/contact-us", Some(data))
+            .await
+    }
+
+    // ── Geo / IP ──────────────────────────────────────────────────────────────
+
+    /// Return the caller's IP address and basic geo context.
+    /// Useful during registration for timezone / country pre-fill.
+    pub async fn get_client_ip(&self) -> Result<crate::models::GeoResponse, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/geo/ip", None::<&()>)
+            .await
+    }
 }
