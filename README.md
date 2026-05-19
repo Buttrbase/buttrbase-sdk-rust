@@ -76,12 +76,9 @@ let login = client.otp_verify_code("+15551234567", "123456").await?;
 ### Magic Link
 
 ```rust
-// Legacy
-client.send_magic_link("user@example.com", "my-app", "my-org").await?;
-
-// v2 — send and verify
 client.magic_link_send("user@example.com", Some("https://app.example.com/callback")).await?;
 let login = client.magic_link_verify("token-from-email").await?;
+println!("{}", login.access_token); // JWT with sub, org, aud claims
 ```
 
 ### SSO (OIDC / SAML)
