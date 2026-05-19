@@ -27,19 +27,83 @@ pub enum ButtrBaseClientError {
     },
 }
 
+/// Whether the client is operating in the live or sandbox environment.
+/// Auto-detected from the `client_id` prefix when using `new_with_credentials`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Environment {
+    Live,
+    Sandbox,
+}
+
+impl Environment {
+    fn from_client_id(client_id: &str) -> Self {
+        if client_id.starts_with("bb_test_") {
+            Self::Sandbox
+        } else {
+            Self::Live
+        }
+    }
+
+    fn default_base_url(&self) -> &'static str {
+        match self {
+            Self::Live => "https://api.buttrbase.com",
+            Self::Sandbox => "https://api.buttrbase.com",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ButtrBaseClient {
     base_url: String,
     client: Client,
     token: Option<String>,
+    /// App credentials for HTTP Basic auth (app-level calls).
+    credentials: Option<(String, String)>,
+    pub environment: Option<Environment>,
 }
 
 impl ButtrBaseClient {
+    /// Create a client with a known base URL. Call `set_token` before making requests.
     pub fn new(base_url: String) -> Self {
         Self {
             base_url,
             client: Client::new(),
             token: None,
+            credentials: None,
+            environment: None,
+        }
+    }
+
+    /// Create a credential-based client. Environment is auto-detected from the
+    /// `client_id` prefix (`bb_live_` → Live, `bb_test_` → Sandbox).
+    /// Use this for app-level API calls that authenticate with HTTP Basic auth.
+    pub fn new_with_credentials(client_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
+        let id = client_id.into();
+        let env = Environment::from_client_id(&id);
+        let base_url = env.default_base_url().to_string();
+        Self {
+            base_url,
+            client: Client::new(),
+            token: None,
+            credentials: Some((id, client_secret.into())),
+            environment: Some(env),
+        }
+    }
+
+    /// Create a credential-based client with a custom base URL (for self-hosted deployments).
+    pub fn with_base_url(
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
+        let id = client_id.into();
+        let env = Environment::from_client_id(&id);
+        Self {
+            base_url: base_url.into(),
+            client: Client::new(),
+            token: None,
+            credentials: Some((id, client_secret.into())),
+            environment: Some(env),
         }
     }
 
@@ -58,7 +122,29 @@ impl ButtrBaseClient {
 
         if let Some(token) = &self.token {
             request_builder = request_builder.bearer_auth(token);
+        } else if let Some((id, secret)) = &self.credentials {
+            request_builder = request_builder.basic_auth(id, Some(secret));
         }
+
+        if let Some(body) = body {
+            request_builder = request_builder.json(body);
+        }
+
+        let response = request_builder.send().await?;
+        self.handle_response(response).await
+    }
+
+    /// Make a request using an explicit bearer token regardless of stored credentials.
+    /// Use this for user-level calls when you have the user's token separately.
+    pub async fn request_with_bearer<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        endpoint: &str,
+        bearer: &str,
+        body: Option<&impl serde::Serialize>,
+    ) -> Result<T, ButtrBaseClientError> {
+        let url = format!("{}{}", self.base_url, endpoint);
+        let mut request_builder = self.client.request(method, &url).bearer_auth(bearer);
 
         if let Some(body) = body {
             request_builder = request_builder.json(body);
