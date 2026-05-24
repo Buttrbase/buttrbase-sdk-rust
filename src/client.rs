@@ -3,17 +3,23 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::models::{
-    AdminPortalToken, AuditEvent, AuthEvent, ButtrBaseErrorResponse, Certificate,
-    CertificateAuthority, CheckoutResponse, Coupon, CreateCredentialsRequest,
-    CreateDeviceAccountRequest, CreatePaymentCheckoutRequest, CreateSsoConnectionRequest,
-    Credentials, CredentialsDetails, Domain, EntitlementCheckRequest, EntitlementCheckResponse,
-    GiftCardValidation, Invoice, JitGrant, LoginResponse, MfaEnrollResponse, MfaStatusResponse,
-    OrgFeature, PaymentCheckoutSession, Profile, RecoveryCodesResponse, RegisterRequest,
-    SecretEntry, SecretValue, SendInvoiceRequest, SendInvoiceResponse, SendSmsRequest,
-    SessionInfo, SigningAuditEntry, SigningKey, SsoConnection, UpdateCredentialsRequest,
-    UserAccount, VerifyEmailIdentityRequest, WebhookDelivery, WebhookEndpoint,
+    AdminPortalToken, ApiKeySummary, AuditEvent, AuditLogQuery, AuditRow, AuthEvent,
+    ButtrBaseErrorResponse, Certificate, CertificateAuthority, CheckoutResponse, Coupon,
+    CreateApiKeyRequest, CreateCredentialsRequest, CreateDeviceAccountRequest,
+    CreateOAuthConfigRequest, CreatePaymentCheckoutRequest, CreateSsoConnectionRequest,
+    CreatedKeyResponse, Credentials, CredentialsDetails, DataEnvelope, Domain,
+    EntitlementCheckRequest, EntitlementCheckResponse, ExchangeResponse, GiftCardValidation,
+    Invoice, JitGrant, LoginResponse, MfaEnrollResponse, MfaStatusResponse, OAuthConfigSummary,
+    OAuthProvider, OrgFeature, PasskeyAuthChallenge, PasskeyAuthComplete, PasskeyListItem,
+    PasskeyRegistrationChallenge, PasskeyRegistrationComplete, PasskeyRegistrationResult,
+    PaymentCheckoutSession, Profile, RecoveryCodesResponse, RegisterRequest, SecretEntry,
+    SecretValue, SendInvoiceRequest, SendInvoiceResponse, SendSmsRequest, SessionInfo,
+    SigningAuditEntry, SigningKey, SsoConnection, UpdateCredentialsRequest,
+    UpdateOAuthConfigRequest, UserAccount, VerifyEmailIdentityRequest, WebhookDelivery,
+    WebhookEndpoint,
 };
 
 #[derive(Error, Debug)]
@@ -175,19 +181,30 @@ impl ButtrBaseClient {
             .await
     }
 
-    pub async fn send_otp(&self, email: &str, app: &str) -> Result<HashMap<String, Value>, ButtrBaseClientError> {
-        let mut body = HashMap::new();
-        body.insert("email", email);
-        body.insert("app", app);
+    pub async fn send_otp(
+        &self,
+        email: &str,
+        app_uuid: Uuid,
+    ) -> Result<HashMap<String, Value>, ButtrBaseClientError> {
+        let body = serde_json::json!({
+            "email": email,
+            "app_uuid": app_uuid.to_string(),
+        });
         self.request(Method::POST, "/api/auth/otp", Some(&body))
             .await
     }
 
-    pub async fn verify_otp(&self, email: &str, otp: &str, app: &str) -> Result<HashMap<String, Value>, ButtrBaseClientError> {
-        let mut body = HashMap::new();
-        body.insert("email", email);
-        body.insert("otp", otp);
-        body.insert("app", app);
+    pub async fn verify_otp(
+        &self,
+        email: &str,
+        otp: &str,
+        app_uuid: Uuid,
+    ) -> Result<HashMap<String, Value>, ButtrBaseClientError> {
+        let body = serde_json::json!({
+            "email": email,
+            "otp": otp,
+            "app_uuid": app_uuid.to_string(),
+        });
         self.request(Method::POST, "/api/auth/otp/verify", Some(&body))
             .await
     }
@@ -736,11 +753,15 @@ impl ButtrBaseClient {
     pub async fn magic_link_send(
         &self,
         email: &str,
-        redirect_url: Option<&str>,
+        redirect_to: Option<&str>,
+        app_uuid: Uuid,
     ) -> Result<Value, ButtrBaseClientError> {
-        let mut body = serde_json::json!({ "email": email });
-        if let Some(url) = redirect_url {
-            body["redirect_url"] = Value::String(url.to_string());
+        let mut body = serde_json::json!({
+            "email": email,
+            "app_uuid": app_uuid.to_string(),
+        });
+        if let Some(url) = redirect_to {
+            body["redirect_to"] = Value::String(url.to_string());
         }
         self.request(Method::POST, "/api/auth/magic-link/send", Some(&body))
             .await
@@ -2631,5 +2652,289 @@ impl ButtrBaseClient {
     pub async fn get_client_ip(&self) -> Result<crate::models::GeoResponse, ButtrBaseClientError> {
         self.request(Method::GET, "/api/geo/ip", None::<&()>)
             .await
+    }
+
+    // ── API key exchange (anonymous) ─────────────────────────────────────────
+
+    /// First-time exchange: convert a raw API key (`wb_live_…` / `wb_test_…`)
+    /// for an access + refresh token pair. Does NOT send an `Authorization`
+    /// header — the API key itself is the credential.
+    pub async fn exchange_api_key(
+        &self,
+        api_key: &str,
+    ) -> Result<ExchangeResponse, ButtrBaseClientError> {
+        self.exchange_inner(serde_json::json!({ "api_key": api_key }))
+            .await
+    }
+
+    /// Refresh-rotation exchange: trade a refresh token from a previous
+    /// `exchange_api_key` call for a new access + refresh pair (the old
+    /// refresh is revoked).
+    pub async fn exchange_refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> Result<ExchangeResponse, ButtrBaseClientError> {
+        self.exchange_inner(serde_json::json!({ "refresh_token": refresh_token }))
+            .await
+    }
+
+    async fn exchange_inner(
+        &self,
+        body: Value,
+    ) -> Result<ExchangeResponse, ButtrBaseClientError> {
+        // Anonymous endpoint — do NOT attach the stored token / credentials.
+        let url = format!("{}/api/v1/auth/api-key/exchange", self.base_url);
+        let response = self.client.post(&url).json(&body).send().await?;
+        self.handle_response(response).await
+    }
+
+    // ── OAuth start URL ──────────────────────────────────────────────────────
+
+    /// Build the URL the user-agent should be redirected to in order to
+    /// initiate an OAuth flow. The backend responds to this URL with a 302 to
+    /// the upstream provider — this helper just constructs the URL, it does
+    /// not perform the request.
+    pub fn oauth_start_url(
+        &self,
+        provider: OAuthProvider,
+        app_uuid: Uuid,
+        return_to: &str,
+    ) -> String {
+        format!(
+            "{}/api/v1/auth/oauth/{}/start?app_uuid={}&return_to={}",
+            self.base_url,
+            provider.as_str(),
+            app_uuid,
+            urlencoding::encode(return_to),
+        )
+    }
+
+    // ── App-level API key admin ──────────────────────────────────────────────
+
+    pub async fn list_app_api_keys(
+        &self,
+        app_uuid: Uuid,
+    ) -> Result<Vec<ApiKeySummary>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/v1/apps/{}/api-keys", app_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_app_api_key(
+        &self,
+        app_uuid: Uuid,
+        input: &CreateApiKeyRequest,
+    ) -> Result<CreatedKeyResponse, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/v1/apps/{}/api-keys", app_uuid),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn revoke_app_api_key(
+        &self,
+        app_uuid: Uuid,
+        key_uuid: Uuid,
+    ) -> Result<(), ButtrBaseClientError> {
+        let _: Value = self
+            .request(
+                Method::DELETE,
+                &format!("/api/v1/apps/{}/api-keys/{}", app_uuid, key_uuid),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn rotate_app_api_key(
+        &self,
+        app_uuid: Uuid,
+        key_uuid: Uuid,
+    ) -> Result<CreatedKeyResponse, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/v1/apps/{}/api-keys/{}/rotate", app_uuid, key_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── App-level OAuth provider config admin ────────────────────────────────
+
+    pub async fn list_oauth_configs(
+        &self,
+        app_uuid: Uuid,
+    ) -> Result<Vec<OAuthConfigSummary>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/v1/apps/{}/oauth-configs", app_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn create_oauth_config(
+        &self,
+        app_uuid: Uuid,
+        input: &CreateOAuthConfigRequest,
+    ) -> Result<OAuthConfigSummary, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/v1/apps/{}/oauth-configs", app_uuid),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn update_oauth_config(
+        &self,
+        app_uuid: Uuid,
+        provider: &str,
+        patch: &UpdateOAuthConfigRequest,
+    ) -> Result<OAuthConfigSummary, ButtrBaseClientError> {
+        self.request(
+            Method::PATCH,
+            &format!("/api/v1/apps/{}/oauth-configs/{}", app_uuid, provider),
+            Some(patch),
+        )
+        .await
+    }
+
+    pub async fn delete_oauth_config(
+        &self,
+        app_uuid: Uuid,
+        provider: &str,
+    ) -> Result<(), ButtrBaseClientError> {
+        let _: Value = self
+            .request(
+                Method::DELETE,
+                &format!("/api/v1/apps/{}/oauth-configs/{}", app_uuid, provider),
+                None::<&()>,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // ── Audit log (read-only) ────────────────────────────────────────────────
+
+    pub async fn read_audit_log(
+        &self,
+        app_uuid: Uuid,
+        opts: AuditLogQuery,
+    ) -> Result<Vec<AuditRow>, ButtrBaseClientError> {
+        let mut endpoint = format!("/api/v1/apps/{}/audit-log", app_uuid);
+        let mut params: Vec<(String, String)> = Vec::new();
+        if let Some(limit) = opts.limit {
+            params.push(("limit".into(), limit.to_string()));
+        }
+        if let Some(prefix) = opts.action_prefix {
+            if !prefix.is_empty() {
+                params.push(("action_prefix".into(), prefix));
+            }
+        }
+        if !params.is_empty() {
+            let qs: String = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+                .collect::<Vec<_>>()
+                .join("&");
+            endpoint.push('?');
+            endpoint.push_str(&qs);
+        }
+        self.request(Method::GET, &endpoint, None::<&()>).await
+    }
+
+    // ── Passkeys (WebAuthn) ─────────────────────────────────────────────────
+    //
+    // Thin HTTP wrappers around the four passkey ceremony endpoints. The
+    // challenge / credential blobs are pass-through `serde_json::Value` —
+    // the browser's `navigator.credentials.create/get` APIs do the heavy
+    // lifting. Begin endpoints unwrap the backend's `{data: ...}` envelope.
+
+    /// `POST /api/passkeys/register/begin` — start passkey registration.
+    /// Requires an authenticated caller (passkey is added to the existing
+    /// account). The returned `challenge` is a WebAuthn
+    /// `CreationChallengeResponse`.
+    pub async fn passkey_register_begin(
+        &self,
+    ) -> Result<PasskeyRegistrationChallenge, ButtrBaseClientError> {
+        let env: DataEnvelope<PasskeyRegistrationChallenge> = self
+            .request(Method::POST, "/api/passkeys/register/begin", None::<&()>)
+            .await?;
+        Ok(env.data)
+    }
+
+    /// `POST /api/passkeys/register/complete` — finish passkey registration.
+    pub async fn passkey_register_complete(
+        &self,
+        body: &PasskeyRegistrationComplete,
+    ) -> Result<PasskeyRegistrationResult, ButtrBaseClientError> {
+        let env: DataEnvelope<PasskeyRegistrationResult> = self
+            .request(Method::POST, "/api/passkeys/register/complete", Some(body))
+            .await?;
+        Ok(env.data)
+    }
+
+    /// `POST /api/passkeys/authenticate/begin` — start passkey authentication.
+    /// Anonymous; no bearer required (the server-signed `auth_state` is the
+    /// only state the client carries between begin and complete).
+    pub async fn passkey_authenticate_begin(
+        &self,
+    ) -> Result<PasskeyAuthChallenge, ButtrBaseClientError> {
+        let env: DataEnvelope<PasskeyAuthChallenge> = self
+            .request(
+                Method::POST,
+                "/api/passkeys/authenticate/begin",
+                None::<&()>,
+            )
+            .await?;
+        Ok(env.data)
+    }
+
+    /// `POST /api/passkeys/authenticate/complete` — finish passkey
+    /// authentication. The session payload shape is currently unstable on the
+    /// backend, so we return raw JSON — callers should narrow at the call
+    /// site.
+    pub async fn passkey_authenticate_complete(
+        &self,
+        body: &PasskeyAuthComplete,
+    ) -> Result<serde_json::Value, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            "/api/passkeys/authenticate/complete",
+            Some(body),
+        )
+        .await
+    }
+
+    /// `GET /api/v1/me/passkeys` — list the authenticated user's enrolled
+    /// passkeys. Returned in descending `created_at` order.
+    ///
+    /// Requires a bearer token. Each row carries `credential_uuid` (for
+    /// revocation) and `credential_id_prefix` (a 12-char display fragment of
+    /// the full WebAuthn credential ID).
+    pub async fn list_my_passkeys(&self) -> Result<Vec<PasskeyListItem>, ButtrBaseClientError> {
+        self.request(Method::GET, "/api/v1/me/passkeys", None::<&()>)
+            .await
+    }
+
+    /// `DELETE /api/v1/me/passkeys/{credential_uuid}` — revoke one of the
+    /// authenticated user's passkeys. Owner check is enforced on the
+    /// backend; passing a UUID that belongs to another user returns 404.
+    pub async fn delete_my_passkey(
+        &self,
+        credential_uuid: Uuid,
+    ) -> Result<serde_json::Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/v1/me/passkeys/{}", credential_uuid),
+            None::<&()>,
+        )
+        .await
     }
 }

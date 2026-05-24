@@ -1,4 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Deserialize, Debug)]
 pub struct User {
@@ -238,6 +240,7 @@ pub struct RegisterRequest<'a> {
     pub email: &'a str,
     pub password: &'a str,
     pub org_name: &'a str,
+    pub app_uuid: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -596,4 +599,256 @@ pub struct GeoResponse {
     pub ip:       String,
     pub country:  String,
     pub timezone: String,
+}
+
+// ── API key exchange (POST /api/v1/auth/api-key/exchange) ────────────────────
+
+/// Response from `POST /api/v1/auth/api-key/exchange`.
+///
+/// `token_type` is always `"Bearer"`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ExchangeResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: String,
+    pub access_expires_at: DateTime<Utc>,
+    pub refresh_expires_at: DateTime<Utc>,
+}
+
+// ── OAuth start URL helper ──────────────────────────────────────────────────
+
+/// OAuth provider supported by `/api/v1/auth/oauth/{provider}/start`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OAuthProvider {
+    Google,
+    Microsoft,
+    Github,
+    Apple,
+}
+
+impl OAuthProvider {
+    /// The URL-path segment for this provider.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+            Self::Microsoft => "microsoft",
+            Self::Github => "github",
+            Self::Apple => "apple",
+        }
+    }
+}
+
+// ── App-level API keys (admin) ──────────────────────────────────────────────
+
+/// One entry from `GET /api/v1/apps/{app_uuid}/api-keys`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ApiKeySummary {
+    pub key_uuid: Uuid,
+    pub app_uuid: Uuid,
+    pub key_prefix: String,
+    pub name: String,
+    /// One of `"short_lived"`, `"permanent"`, or `"expiring"`.
+    pub key_type: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// "Shown once" response from create / rotate. `raw_key` is the only place the
+/// plaintext key is ever returned — store it immediately or it cannot be
+/// recovered.
+#[derive(Deserialize, Debug, Clone)]
+pub struct CreatedKeyResponse {
+    pub key_uuid: Uuid,
+    pub raw_key: String,
+    pub key_prefix: String,
+    pub key_type: String,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Key lifetime / rotation policy. Maps to backend `KeyType` discriminator
+/// strings (`short_lived`, `permanent`, `expiring`).
+#[derive(Debug, Clone)]
+pub enum KeyType {
+    ShortLived,
+    Permanent,
+    Expiring(ExpiryInput),
+}
+
+/// When an `Expiring` key should expire. Wire format:
+/// `{"absolute": "<rfc3339>"}` or `{"in_days": 30}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpiryInput {
+    Absolute(DateTime<Utc>),
+    InDays(i64),
+}
+
+/// Body of `POST /api/v1/apps/{app_uuid}/api-keys`.
+#[derive(Debug, Clone)]
+pub struct CreateApiKeyRequest {
+    pub name: String,
+    /// `"live"` or `"test"` — selects the key prefix.
+    pub env: String,
+    pub key_type: KeyType,
+}
+
+impl Serialize for CreateApiKeyRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("name", &self.name)?;
+        map.serialize_entry("env", &self.env)?;
+        match &self.key_type {
+            KeyType::ShortLived => {
+                map.serialize_entry("key_type", "short_lived")?;
+            }
+            KeyType::Permanent => {
+                map.serialize_entry("key_type", "permanent")?;
+            }
+            KeyType::Expiring(expiry) => {
+                map.serialize_entry("key_type", "expiring")?;
+                map.serialize_entry("expiry", expiry)?;
+            }
+        }
+        map.end()
+    }
+}
+
+// ── App-level OAuth provider configs (admin) ────────────────────────────────
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct OAuthConfigSummary {
+    pub provider: String,
+    pub client_id: String,
+    pub redirect_uris: Vec<String>,
+    pub scopes: Vec<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct CreateOAuthConfigRequest {
+    pub provider: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_uris: Vec<String>,
+    pub scopes: Vec<String>,
+    pub enabled: bool,
+}
+
+/// Patch body. Each `Option::Some` field overwrites the stored value; `None`
+/// leaves it as-is. To rotate the secret, set `client_secret` to the new
+/// plaintext value.
+#[derive(Serialize, Debug, Clone, Default)]
+pub struct UpdateOAuthConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_uris: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+// ── Audit log (admin) ───────────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct AuditRow {
+    pub id: i64,
+    pub app_uuid: Uuid,
+    pub actor_user_uuid: Option<Uuid>,
+    pub action: String,
+    pub target_id: Option<String>,
+    pub details: Option<serde_json::Value>,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Query parameters for `GET /api/v1/apps/{app_uuid}/audit-log`.
+#[derive(Debug, Clone, Default)]
+pub struct AuditLogQuery {
+    /// Page size. Backend default is 200, capped at 1000.
+    pub limit: Option<u64>,
+    /// Returns only events whose `action` starts with this string. Examples:
+    /// `"api_key."`, `"oauth_config."`, `"api_key.revoked"`.
+    pub action_prefix: Option<String>,
+}
+
+// ── Passkeys (WebAuthn) ─────────────────────────────────────────────────────
+//
+// The backend wraps passkey responses in `{data: ...}` (the
+// `DataEnvelope<T>` shape). The SDK methods unwrap this for ergonomics.
+//
+// The WebAuthn challenge / credential blobs are pass-through `serde_json::Value`
+// — we deliberately don't pull in `webauthn-rs` as a dep; consumers either
+// hand the JSON to a browser via WASM or to a native authenticator helper.
+
+/// Internal envelope used to unwrap the backend's `{data: ...}` shape.
+#[derive(Deserialize, Debug, Clone)]
+pub(crate) struct DataEnvelope<T> {
+    pub data: T,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct PasskeyRegistrationChallenge {
+    /// WebAuthn `CreationChallengeResponse`. Pass `challenge.publicKey` to
+    /// `navigator.credentials.create({publicKey: ...})` in the browser.
+    pub challenge: serde_json::Value,
+    /// Opaque server-signed blob; pass back unchanged to
+    /// [`super::client::ButtrBaseClient::passkey_register_complete`].
+    pub registration_state: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct PasskeyRegistrationComplete {
+    pub registration_state: String,
+    /// WebAuthn `RegisterPublicKeyCredential` produced by the browser.
+    pub credential: serde_json::Value,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct PasskeyRegistrationResult {
+    pub credential_id: String,
+    pub message: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct PasskeyAuthChallenge {
+    /// WebAuthn `RequestChallengeResponse`. Pass `challenge.publicKey` to
+    /// `navigator.credentials.get({publicKey: ...})` in the browser.
+    pub challenge: serde_json::Value,
+    pub auth_state: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct PasskeyAuthComplete {
+    pub auth_state: String,
+    /// WebAuthn `PublicKeyCredential` produced by the browser.
+    pub credential: serde_json::Value,
+}
+
+/// A single row returned by `GET /api/v1/me/passkeys`.
+///
+/// `credential_id_prefix` is the first 12 characters of the WebAuthn
+/// credential ID — enough to disambiguate in a dashboard table without
+/// exposing the full identifier.
+#[derive(Deserialize, Debug, Clone)]
+pub struct PasskeyListItem {
+    pub credential_uuid: Uuid,
+    pub credential_id_prefix: String,
+    pub app_uuid: Option<Uuid>,
+    pub nickname: Option<String>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }

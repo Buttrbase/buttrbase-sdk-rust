@@ -1,5 +1,12 @@
 # Rust SDK
 
+> **Breaking change (unreleased) — `app_uuid` migration.** `send_otp`,
+> `verify_otp`, `magic_link_send`, and `register` now take `app_uuid: Uuid`
+> in place of the old `app: &str` slug. Slug-based app identifiers are no
+> longer accepted by the backend. See `CHANGELOG.md` for the full list of
+> additions (API-key exchange, OAuth start helper, app-level key & OAuth
+> config admin, audit log).
+
 ## Overview
 
 The official Rust SDK for ButtrBase. Two surfaces, one crate:
@@ -29,11 +36,15 @@ let mut client = ButtrBaseClient::new("https://api.buttrbase.com".into());
 
 ```rust
 use buttrbase_sdk::models::RegisterRequest;
+use uuid::Uuid;
+
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
 
 let response = client.register(&RegisterRequest {
     email: "alice@example.com",
     password: "secure-password",
     org_name: "my-org",
+    app_uuid,
     first_name: Some("Alice"),
     last_name: Some("Smith"),
 }).await?;
@@ -55,8 +66,11 @@ let options = client.get_login_options("org-uuid").await?;
 ### OTP (Email)
 
 ```rust
-client.send_otp("user@example.com", "my-app").await?;
-client.verify_otp("user@example.com", "123456", "my-app").await?;
+use uuid::Uuid;
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
+
+client.send_otp("user@example.com", app_uuid).await?;
+client.verify_otp("user@example.com", "123456", app_uuid).await?;
 ```
 
 ### OTP (Phone)
@@ -76,9 +90,56 @@ let login = client.otp_verify_code("+15551234567", "123456").await?;
 ### Magic Link
 
 ```rust
-client.magic_link_send("user@example.com", Some("https://app.example.com/callback")).await?;
+use uuid::Uuid;
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
+
+client.magic_link_send(
+    "user@example.com",
+    Some("https://app.example.com/callback"),
+    app_uuid,
+).await?;
 let login = client.magic_link_verify("token-from-email").await?;
 println!("{}", login.access_token); // JWT with sub, org, aud claims
+```
+
+### Passkey support (WebAuthn)
+
+Thin wrappers around the four passkey ceremony endpoints. The WebAuthn JSON
+blobs are pass-through `serde_json::Value` — no `webauthn-rs` dep is pulled in
+on the SDK side; consumers either hand the JSON to a browser (WASM /
+JavaScript) or to a native authenticator helper.
+
+```rust
+use buttrbase_sdk::models::{PasskeyAuthComplete, PasskeyRegistrationComplete};
+
+// Registration (requires an authenticated caller — passkey added to the
+// user's existing account):
+let begin = client.passkey_register_begin().await?;
+// Hand `begin.challenge` (a WebAuthn `CreationChallengeResponse`) to a
+// browser; the browser returns a `RegisterPublicKeyCredential`.
+let result = client.passkey_register_complete(&PasskeyRegistrationComplete {
+    registration_state: begin.registration_state,
+    credential: browser_credential_json,
+}).await?;
+println!("registered passkey: {}", result.credential_id);
+
+// Authentication (anonymous):
+let challenge = client.passkey_authenticate_begin().await?;
+// Browser produces a `PublicKeyCredential` assertion via
+// `navigator.credentials.get({publicKey: challenge.publicKey})`.
+let session = client.passkey_authenticate_complete(&PasskeyAuthComplete {
+    auth_state: challenge.auth_state,
+    credential: browser_assertion_json,
+}).await?;
+
+// List the signed-in user's enrolled passkeys (descending by created_at):
+let passkeys = client.list_my_passkeys().await?;
+for p in &passkeys {
+    println!("{} ({})", p.nickname.as_deref().unwrap_or("—"), p.credential_id_prefix);
+}
+
+// Revoke one by its `credential_uuid` (owner check enforced server-side):
+client.delete_my_passkey(passkeys[0].credential_uuid).await?;
 ```
 
 ### SSO (OIDC / SAML)
@@ -795,12 +856,15 @@ if FormatNegotiator::is_binary(&response_headers) {
 ```rust
 use buttrbase_sdk::client::ButtrBaseClient;
 use buttrbase_sdk::models::RegisterRequest;
+use uuid::Uuid;
 
 let mut client = ButtrBaseClient::new("https://api.buttrbase.com".into());
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
 
 // 1. Register and login
 client.register(&RegisterRequest {
     email: "admin@acme.com", password: "s3cur3!", org_name: "Acme Corp",
+    app_uuid,
     first_name: Some("Alice"), last_name: None,
 }).await?;
 client.login("admin@acme.com", "s3cur3!", "Acme Corp").await?;
@@ -884,6 +948,144 @@ let secret = client.get_secret("org-uuid", "DATABASE_URL").await?;
 // 3. Rotate signing keys
 client.rotate_signing_keys("org-uuid").await?;
 let audit = client.list_signing_audit("org-uuid").await?;
+```
+
+### API Key Exchange (initial + refresh rotation)
+
+Long-lived API keys (`wb_live_…` / `wb_test_…`) shouldn't sit in memory of
+running services — exchange them for a short-lived JWT pair at startup and
+rotate the refresh token on a timer.
+
+```rust
+use buttrbase_sdk::client::ButtrBaseClient;
+
+let client = ButtrBaseClient::new("https://api.buttrbase.com".into());
+
+// 1. Bootstrap: exchange the raw API key once, then discard it.
+let initial = client.exchange_api_key("wb_live_…").await?;
+let access  = initial.access_token;
+let refresh = initial.refresh_token;
+println!("access expires at {}", initial.access_expires_at);
+
+// 2. Before `access` expires, rotate the refresh token for a fresh pair.
+let rotated = client.exchange_refresh_token(&refresh).await?;
+// `rotated.refresh_token` is the new one; the old refresh is now revoked.
+```
+
+### OAuth Start URL
+
+`oauth_start_url` builds the URL the user-agent should be sent to; it does
+not perform the redirect itself (the backend does, with a 302 once the user
+hits it).
+
+```rust
+use buttrbase_sdk::models::OAuthProvider;
+use uuid::Uuid;
+
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
+
+let url = client.oauth_start_url(
+    OAuthProvider::Google,
+    app_uuid,
+    "https://app.example.com/oauth/callback",
+);
+// e.g. https://api.buttrbase.com/api/v1/auth/oauth/google/start?app_uuid=…&return_to=…
+// Redirect the browser to this URL.
+```
+
+### App-level API Key Creation
+
+`raw_key` in the response is returned **once** — the backend stores only a
+hash. If you don't capture it now, the key cannot be recovered.
+
+```rust
+use buttrbase_sdk::models::{CreateApiKeyRequest, ExpiryInput, KeyType};
+use uuid::Uuid;
+
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
+
+let created = client.create_app_api_key(
+    app_uuid,
+    &CreateApiKeyRequest {
+        name: "CI ingestion key".into(),
+        env: "live".into(),
+        key_type: KeyType::Expiring(ExpiryInput::InDays(90)),
+    },
+).await?;
+
+// Store `created.raw_key` somewhere secure. It will never be shown again.
+println!("{}", created.raw_key);
+
+// Listing only ever returns metadata + prefix — never the secret.
+let keys = client.list_app_api_keys(app_uuid).await?;
+
+// Rotate produces a replacement key (revoking the old) with the same settings.
+let rotated = client.rotate_app_api_key(app_uuid, created.key_uuid).await?;
+
+// Or revoke outright.
+client.revoke_app_api_key(app_uuid, rotated.key_uuid).await?;
+```
+
+### OAuth Provider Config
+
+Per-app OAuth client credentials for Google / Microsoft / GitHub / Apple.
+`client_secret` is encrypted at rest and never returned in responses.
+
+```rust
+use buttrbase_sdk::models::{CreateOAuthConfigRequest, UpdateOAuthConfigRequest};
+use uuid::Uuid;
+
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
+
+let cfg = client.create_oauth_config(
+    app_uuid,
+    &CreateOAuthConfigRequest {
+        provider: "google".into(),
+        client_id: "…apps.googleusercontent.com".into(),
+        client_secret: "GOCSPX-…".into(),
+        redirect_uris: vec!["https://app.example.com/oauth/callback".into()],
+        scopes: vec!["openid".into(), "email".into(), "profile".into()],
+        enabled: true,
+    },
+).await?;
+
+// Rotate the secret without touching the rest of the config.
+client.update_oauth_config(
+    app_uuid,
+    "google",
+    &UpdateOAuthConfigRequest {
+        client_secret: Some("GOCSPX-new-…".into()),
+        ..Default::default()
+    },
+).await?;
+
+let configs = client.list_oauth_configs(app_uuid).await?;
+
+client.delete_oauth_config(app_uuid, "google").await?;
+```
+
+### Audit Log
+
+Per-app, read-only stream of security events (`api_key.*`, `oauth_config.*`,
+…), newest first.
+
+```rust
+use buttrbase_sdk::models::AuditLogQuery;
+use uuid::Uuid;
+
+let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
+
+let rows = client.read_audit_log(
+    app_uuid,
+    AuditLogQuery {
+        limit: Some(50),
+        action_prefix: Some("api_key.".into()),
+    },
+).await?;
+
+for row in rows {
+    println!("{}  {}  {:?}", row.created_at, row.action, row.target_id);
+}
 ```
 
 ## Docs
