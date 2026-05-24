@@ -741,6 +741,14 @@ pub struct CreateOAuthConfigRequest {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub enabled: bool,
+    /// Provider-specific extras as raw JSON. Required for Apple sign-in
+    /// (shape: `{"team_id": "...", "key_id": "...", "private_key": "<PEM>"}`);
+    /// the `private_key` field is stripped from the JSON server-side and
+    /// re-stored as `private_key_encrypted` under the app's DEK. Optional /
+    /// `None` for providers that don't need extras (Google, Microsoft,
+    /// GitHub).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_extras: Option<serde_json::Value>,
 }
 
 /// Patch body. Each `Option::Some` field overwrites the stored value; `None`
@@ -758,6 +766,12 @@ pub struct UpdateOAuthConfigRequest {
     pub scopes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Replace the provider_extras JSON entirely. For Apple, sending a
+    /// fresh `private_key` triggers re-encryption under the app's DEK and
+    /// rotates the stored ciphertext. Omit (or `None`) to leave the
+    /// existing extras alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_extras: Option<serde_json::Value>,
 }
 
 // ── Audit log (admin) ───────────────────────────────────────────────────────
