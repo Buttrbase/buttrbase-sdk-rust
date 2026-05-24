@@ -6,7 +6,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::models::{
-    AdminPortalToken, ApiKeySummary, AuditEvent, AuditLogQuery, AuditRow, AuthEvent,
+    AdminPortalToken, ApiKeySummary, AppRpConfig, AuditEvent, AuditLogQuery, AuditRow, AuthEvent,
     ButtrBaseErrorResponse, Certificate, CertificateAuthority, CheckoutResponse, Coupon,
     CreateApiKeyRequest, CreateCredentialsRequest, CreateDeviceAccountRequest,
     CreateOAuthConfigRequest, CreatePaymentCheckoutRequest, CreateSsoConnectionRequest,
@@ -17,9 +17,9 @@ use crate::models::{
     PasskeyRegistrationChallenge, PasskeyRegistrationComplete, PasskeyRegistrationResult,
     PaymentCheckoutSession, Profile, RecoveryCodesResponse, RegisterRequest, SecretEntry,
     SecretValue, SendInvoiceRequest, SendInvoiceResponse, SendSmsRequest, SessionInfo,
-    SigningAuditEntry, SigningKey, SsoConnection, UpdateCredentialsRequest,
-    UpdateOAuthConfigRequest, UserAccount, VerifyEmailIdentityRequest, WebhookDelivery,
-    WebhookEndpoint,
+    SigningAuditEntry, SigningKey, SsoConnection, UpdateAppRpConfigRequest,
+    UpdateCredentialsRequest, UpdateOAuthConfigRequest, UserAccount, VerifyEmailIdentityRequest,
+    WebhookDelivery, WebhookEndpoint,
 };
 
 #[derive(Error, Debug)]
@@ -2934,6 +2934,39 @@ impl ButtrBaseClient {
             Method::DELETE,
             &format!("/api/v1/me/passkeys/{}", credential_uuid),
             None::<&()>,
+        )
+        .await
+    }
+
+    // ── Per-app WebAuthn relying-party config ────────────────────────────────
+
+    /// `GET /api/v1/apps/{app_uuid}/rp-config` — read this app's WebAuthn RP
+    /// id and allowed origin list. `rp_id == None` in the response means the
+    /// app currently falls back to the deployment-wide RP id from env.
+    pub async fn get_app_rp_config(
+        &self,
+        app_uuid: Uuid,
+    ) -> Result<AppRpConfig, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/v1/apps/{}/rp-config", app_uuid),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// `PATCH /api/v1/apps/{app_uuid}/rp-config` — partial update. Only the
+    /// fields you set in `patch` are touched; omitted fields are unchanged.
+    /// Returns the post-patch config.
+    pub async fn update_app_rp_config(
+        &self,
+        app_uuid: Uuid,
+        patch: &UpdateAppRpConfigRequest,
+    ) -> Result<AppRpConfig, ButtrBaseClientError> {
+        self.request(
+            Method::PATCH,
+            &format!("/api/v1/apps/{}/rp-config", app_uuid),
+            Some(patch),
         )
         .await
     }

@@ -852,3 +852,32 @@ pub struct PasskeyListItem {
     pub last_used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
+
+/// Per-app WebAuthn relying-party configuration.
+///
+/// `rp_id` is the eTLD+1 the browser binds passkeys to (e.g. `app.example.com`).
+/// `None` means the app falls back to the deployment-wide RP id from the
+/// `BUTTRBASE_WEBAUTHN_RP_ID` env var. `rp_origins` lists every origin
+/// permitted to ceremonies under this RP — a single app can serve
+/// `https://app.example.com`, `https://staging.example.com`, and
+/// `http://localhost:3001` without re-enrolling passkeys.
+#[derive(Deserialize, Debug, Clone)]
+pub struct AppRpConfig {
+    pub app_uuid: Uuid,
+    pub rp_id: Option<String>,
+    pub rp_origins: Vec<String>,
+}
+
+/// Patch shape for `PATCH /api/v1/apps/{app_uuid}/rp-config`.
+///
+/// Fields default to `None` (omitted) — only the fields you set are updated.
+/// To explicitly *clear* `rp_id` (revert to env fallback) the backend
+/// accepts `{"rp_id": null}`; this SDK does not currently expose that —
+/// drop to the raw [`Client::request`] for that one-off if needed.
+#[derive(Serialize, Debug, Clone, Default)]
+pub struct UpdateAppRpConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rp_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rp_origins: Option<Vec<String>>,
+}
