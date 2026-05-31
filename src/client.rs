@@ -666,3 +666,743 @@ fn parse_error_body(status: StatusCode, body: &str) -> Error {
         body: body.to_string(),
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::prelude::*;
+    use httpmock::Method::PATCH;
+    use serde_json::json;
+
+    fn make_client(server: &MockServer) -> ButtrBaseClient {
+        ButtrBaseClient::with_base_url("bb_test_cid_test", "bb_test_sk_test", server.base_url())
+    }
+
+    fn make_live_client(server: &MockServer) -> ButtrBaseClient {
+        ButtrBaseClient::with_base_url("bb_live_cid_test", "bb_live_sk_test", server.base_url())
+    }
+
+    fn wrap_data(val: serde_json::Value) -> serde_json::Value {
+        json!({ "data": val })
+    }
+
+    // ── Constructor / accessors ─────────────────────────────────────────────
+
+    #[test]
+    fn test_new_sandbox_detected() {
+        let c = ButtrBaseClient::new("bb_test_cid_foo", "bb_test_sk_foo");
+        assert_eq!(c.environment(), Environment::Sandbox);
+        assert!(c.is_sandbox());
+    }
+
+    #[test]
+    fn test_new_live_detected() {
+        let c = ButtrBaseClient::new("bb_live_cid_foo", "bb_live_sk_foo");
+        assert_eq!(c.environment(), Environment::Live);
+        assert!(!c.is_sandbox());
+    }
+
+    #[test]
+    fn test_with_base_url_overrides_url() {
+        let c = ButtrBaseClient::with_base_url("bb_test_cid_foo", "secret", "https://custom.host");
+        assert_eq!(c.base_url(), "https://custom.host");
+        assert_eq!(c.environment(), Environment::Sandbox);
+    }
+
+    #[test]
+    fn test_client_clone() {
+        let c = ButtrBaseClient::new("bb_test_cid_foo", "secret");
+        let c2 = c.clone();
+        assert_eq!(c2.environment(), c.environment());
+    }
+
+    // ── Environment model ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_environment_as_str() {
+        assert_eq!(Environment::Live.as_str(), "live");
+        assert_eq!(Environment::Sandbox.as_str(), "sandbox");
+    }
+
+    #[test]
+    fn test_environment_display() {
+        assert_eq!(format!("{}", Environment::Live), "live");
+        assert_eq!(format!("{}", Environment::Sandbox), "sandbox");
+    }
+
+    #[test]
+    fn test_environment_is_sandbox() {
+        assert!(Environment::Sandbox.is_sandbox());
+        assert!(!Environment::Live.is_sandbox());
+    }
+
+    #[test]
+    fn test_environment_from_client_id_sandbox() {
+        assert_eq!(Environment::from_client_id("bb_test_foo"), Environment::Sandbox);
+    }
+
+    #[test]
+    fn test_environment_from_client_id_live() {
+        assert_eq!(Environment::from_client_id("bb_live_foo"), Environment::Live);
+        assert_eq!(Environment::from_client_id("other"), Environment::Live);
+    }
+
+    #[test]
+    fn test_environment_copy() {
+        let e = Environment::Live;
+        let e2 = e; // Copy
+        assert_eq!(e, e2);
+    }
+
+    // ── Error type ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_error_api_display() {
+        let e = Error::Api {
+            status: 401,
+            message: "Unauthorized".to_string(),
+            code: Some("AUTH_REQUIRED".to_string()),
+        };
+        let s = format!("{}", e);
+        assert!(s.contains("401"));
+        assert!(s.contains("Unauthorized"));
+    }
+
+    #[test]
+    fn test_error_unexpected_display() {
+        let e = Error::Unexpected {
+            status: 500,
+            body: "Internal Server Error".to_string(),
+        };
+        let s = format!("{}", e);
+        assert!(s.contains("500"));
+    }
+
+    #[test]
+    fn test_error_json_display() {
+        let inner = serde_json::from_str::<serde_json::Value>("not valid json").unwrap_err();
+        let e = Error::Json(inner);
+        let s = format!("{}", e);
+        assert!(s.contains("serialisation error"));
+    }
+
+    // ── send_otp ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_send_otp_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/app/auth/otp/send");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        client.send_otp(1, "myapp", "u@e.com", "org-uuid", "myorg").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_send_otp_api_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/app/auth/otp/send");
+            then.status(400)
+                .json_body(json!({"error": {"message": "Invalid email", "code": "BAD_EMAIL"}}));
+        });
+        let client = make_client(&server);
+        let result = client.send_otp(1, "myapp", "bad", "org", "org").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Api { status, message, code } => {
+                assert_eq!(status, 400);
+                assert_eq!(message, "Invalid email");
+                assert_eq!(code, Some("BAD_EMAIL".to_string()));
+            }
+            e => panic!("unexpected: {:?}", e),
+        }
+    }
+
+    // ── verify_otp ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_verify_otp_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/app/auth/otp/verify");
+            then.status(200).json_body(json!({
+                "token": "access_jwt",
+                "refresh_token": "refresh_jwt",
+                "user_uuid": "00000000-0000-0000-0000-000000000001"
+            }));
+        });
+        let client = make_client(&server);
+        let pair = client.verify_otp(1, "myapp", "u@e.com", "123456", "o-uuid", "myorg").await.unwrap();
+        assert_eq!(pair.token, "access_jwt");
+        assert_eq!(pair.refresh_token, Some("refresh_jwt".to_string()));
+    }
+
+    // ── refresh_token ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_refresh_token_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/app/auth/refresh");
+            then.status(200).json_body(json!({
+                "token": "new_access_jwt",
+                "refresh_token": "new_refresh_jwt"
+            }));
+        });
+        let client = make_client(&server);
+        let at = client.refresh_token("old_refresh_jwt").await.unwrap();
+        assert_eq!(at.token, "new_access_jwt");
+    }
+
+    // ── send_magic_link / verify_magic_link ────────────────────────────────
+
+    #[tokio::test]
+    async fn test_send_magic_link_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/auth/magic-link/send");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        client.send_magic_link("u@e.com", "myorg", "myapp").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_verify_magic_link_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/auth/magic-link/verify");
+            then.status(200).json_body(json!({
+                "token": "ml_jwt",
+                "refresh_token": null,
+                "user_uuid": null
+            }));
+        });
+        let client = make_client(&server);
+        let pair = client.verify_magic_link("magic_code").await.unwrap();
+        assert_eq!(pair.token, "ml_jwt");
+    }
+
+    // ── check_entitlement ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_check_entitlement_granted() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/entitlements/check");
+            then.status(200).json_body(wrap_data(json!({"granted": true, "reason": null})));
+        });
+        let client = make_client(&server);
+        let result = client.check_entitlement("user_token", "advanced_analytics").await.unwrap();
+        assert!(result.granted);
+        assert!(result.reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_entitlement_denied() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/entitlements/check");
+            then.status(200).json_body(wrap_data(json!({"granted": false, "reason": "plan_limit"})));
+        });
+        let client = make_client(&server);
+        let result = client.check_entitlement("user_token", "feature_x").await.unwrap();
+        assert!(!result.granted);
+        assert_eq!(result.reason, Some("plan_limit".to_string()));
+    }
+
+    // ── check_entitlements (batch) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_check_entitlements_batch() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/entitlements/check/batch");
+            then.status(200).json_body(wrap_data(json!({
+                "feature_a": {"granted": true, "reason": null},
+                "feature_b": {"granted": false, "reason": "plan_limit"}
+            })));
+        });
+        let client = make_client(&server);
+        let map = client.check_entitlements("tok", &["feature_a", "feature_b"]).await.unwrap();
+        assert!(map["feature_a"].granted);
+        assert!(!map["feature_b"].granted);
+    }
+
+    // ── effective_entitlements ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_effective_entitlements() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/entitlements/effective");
+            then.status(200).json_body(wrap_data(json!([
+                {"feature_key": "feat_a", "granted": true}
+            ])));
+        });
+        let client = make_client(&server);
+        let ents = client.effective_entitlements("tok").await.unwrap();
+        assert_eq!(ents.len(), 1);
+        assert_eq!(ents[0].feature_key, "feat_a");
+        assert!(ents[0].granted);
+    }
+
+    // ── pricing_preview ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_pricing_preview() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/pricing/preview");
+            then.status(200).json_body(wrap_data(json!({
+                "amount_cents": 999,
+                "currency": "USD",
+                "discount_cents": null,
+                "tax_cents": null,
+                "final_cents": 999,
+                "region_resolved": null
+            })));
+        });
+        let client = make_client(&server);
+        let req = crate::models::PricingPreviewRequest {
+            price_id: 1,
+            coupon_code: None,
+            seats: None,
+            country: None,
+        };
+        let preview = client.pricing_preview("tok", &req).await.unwrap();
+        assert_eq!(preview.amount_cents, 999);
+        assert_eq!(preview.currency, "USD");
+        assert_eq!(preview.final_cents, 999);
+    }
+
+    // ── pricing_quote ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_pricing_quote() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/pricing/quote");
+            then.status(200).json_body(wrap_data(json!({"quote_id": "q-1", "expires_at": "2024-12-31"})));
+        });
+        let client = make_client(&server);
+        let req = crate::models::PricingPreviewRequest {
+            price_id: 2,
+            coupon_code: Some("SAVE10".to_string()),
+            seats: Some(5),
+            country: Some("US".to_string()),
+        };
+        let result = client.pricing_quote("tok", &req).await.unwrap();
+        assert_eq!(result["quote_id"], "q-1");
+    }
+
+    // ── checkout_session ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_checkout_session() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/pricing/checkout-session");
+            then.status(200).json_body(wrap_data(json!({
+                "payment_url": "https://pay.example.com/sess_1",
+                "session_id": "sess_1",
+                "provider": "stripe"
+            })));
+        });
+        let client = make_live_client(&server);
+        let req = crate::models::CheckoutSessionRequest {
+            price_id: 1,
+            quote_id: None,
+        };
+        let session = client.checkout_session("tok", &req).await.unwrap();
+        assert_eq!(session.provider, "stripe");
+        assert!(session.payment_url.contains("sess_1"));
+    }
+
+    // ── wallet ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_wallet() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/wallet");
+            then.status(200).json_body(wrap_data(json!({
+                "balance_cents": 5000,
+                "budget_limit_cents": 10000,
+                "budget_period": "monthly"
+            })));
+        });
+        let client = make_client(&server);
+        let summary = client.wallet("tok").await.unwrap();
+        assert_eq!(summary.balance_cents, 5000);
+        assert_eq!(summary.budget_limit_cents, Some(10000));
+    }
+
+    // ── wallet_transactions ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_wallet_transactions() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path_contains("/api/wallet/transactions");
+            then.status(200).json_body(wrap_data(json!([{
+                "id": 1, "kind": "deposit", "amount_cents": 1000,
+                "description": "Top-up", "created_at": "2024-01-01"
+            }])));
+        });
+        let client = make_client(&server);
+        let txns = client.wallet_transactions("tok", 10, 0).await.unwrap();
+        assert_eq!(txns.len(), 1);
+        assert_eq!(txns[0].kind, "deposit");
+        assert_eq!(txns[0].amount_cents, 1000);
+    }
+
+    // ── subscriptions ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_subscriptions() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/subscriptions");
+            then.status(200).json_body(wrap_data(json!([{
+                "id": 1,
+                "user_uuid": "00000000-0000-0000-0000-000000000001",
+                "price_id": 5,
+                "provider": "stripe",
+                "provider_subscription_id": "sub_xxx",
+                "status": "active",
+                "created_at": "2024-01-01",
+                "updated_at": "2024-01-01"
+            }])));
+        });
+        let client = make_client(&server);
+        let subs = client.subscriptions("tok").await.unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].provider, "stripe");
+        assert_eq!(subs[0].status, "active");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_subscription() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(DELETE).path("/api/subscriptions/42");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        client.cancel_subscription("tok", 42).await.unwrap();
+    }
+
+    // ── billing_history ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_billing_history() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/billing/history");
+            then.status(200).json_body(wrap_data(json!([{
+                "id": 1, "user_id": 1, "subscription_id": null,
+                "provider": "stripe", "provider_invoice_id": "inv_1",
+                "amount": 999, "status": "paid",
+                "invoice_pdf_url": "https://pdf.example.com",
+                "created_at": "2024-01-01", "updated_at": "2024-01-01"
+            }])));
+        });
+        let client = make_client(&server);
+        let history = client.billing_history("tok").await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].provider, "stripe");
+        assert_eq!(history[0].amount, 999);
+    }
+
+    // ── report_usage ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_report_usage_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/usage/report");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        let event = crate::models::UsageEvent {
+            metric: "api_calls".to_string(),
+            quantity: 1.0,
+            org_uuid: None,
+            app_uuid: None,
+            timestamp: None,
+        };
+        client.report_usage(&event).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_report_usage_with_all_fields() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/usage/report");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        let event = crate::models::UsageEvent {
+            metric: "storage_gb".to_string(),
+            quantity: 2.5,
+            org_uuid: Some(uuid::Uuid::nil()),
+            app_uuid: Some(uuid::Uuid::nil()),
+            timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+        };
+        client.report_usage(&event).await.unwrap();
+    }
+
+    // ── ingest_event ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_ingest_event() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/analytics/events");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        let event = crate::models::AnalyticsEvent {
+            event_type: "page_view".to_string(),
+            properties: Some(json!({"page": "/home"})),
+            timestamp: None,
+        };
+        client.ingest_event("tok", &event).await.unwrap();
+    }
+
+    // ── app_analytics_overview / org_analytics_overview ───────────────────
+
+    #[tokio::test]
+    async fn test_app_analytics_overview() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path_contains("/api/analytics/apps/app-1/overview");
+            then.status(200).json_body(wrap_data(json!({"users": 100, "events": 500})));
+        });
+        let client = make_client(&server);
+        let result = client.app_analytics_overview("app-1", "7d").await.unwrap();
+        assert_eq!(result["users"], 100);
+    }
+
+    #[tokio::test]
+    async fn test_org_analytics_overview() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path_contains("/api/analytics/organizations/org-1/overview");
+            then.status(200).json_body(wrap_data(json!({"active_users": 50})));
+        });
+        let client = make_client(&server);
+        let result = client.org_analytics_overview("tok", "org-1", "30d").await.unwrap();
+        assert_eq!(result["active_users"], 50);
+    }
+
+    // ── teams ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_org_teams() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/organizations/org-1/teams");
+            then.status(200).json_body(wrap_data(json!([{
+                "id": 1,
+                "team_uuid": "00000000-0000-0000-0000-000000000001",
+                "org_uuid": "org-1",
+                "name": "Engineering",
+                "description": null
+            }])));
+        });
+        let client = make_client(&server);
+        let teams = client.org_teams("tok", "org-1").await.unwrap();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].name, "Engineering");
+    }
+
+    #[tokio::test]
+    async fn test_user_teams() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/users/u-1/teams");
+            then.status(200).json_body(wrap_data(json!([])));
+        });
+        let client = make_client(&server);
+        let teams = client.user_teams("tok", "u-1").await.unwrap();
+        assert!(teams.is_empty());
+    }
+
+    // ── apps ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_my_apps() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/me/apps");
+            then.status(200).json_body(wrap_data(json!([{
+                "app_uuid": "00000000-0000-0000-0000-000000000002",
+                "app_name": "My SaaS",
+                "role": "admin"
+            }])));
+        });
+        let client = make_client(&server);
+        let apps = client.my_apps("tok").await.unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].app_name, "My SaaS");
+    }
+
+    #[tokio::test]
+    async fn test_app_orgs() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/apps/app-uuid-1/organizations");
+            then.status(200).json_body(wrap_data(json!([{
+                "org_uuid": "00000000-0000-0000-0000-000000000003",
+                "org_name": "ACME Corp",
+                "role": "owner"
+            }])));
+        });
+        let client = make_client(&server);
+        let orgs = client.app_orgs("tok", "app-uuid-1").await.unwrap();
+        assert_eq!(orgs.len(), 1);
+        assert_eq!(orgs[0].org_name, "ACME Corp");
+    }
+
+    #[tokio::test]
+    async fn test_app_credentials() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/apps/app-uuid-1/credentials");
+            then.status(200).json_body(wrap_data(json!({
+                "app_name": "MySaaS",
+                "sandbox_enabled": true,
+                "live": {
+                    "environment": "live",
+                    "client_id": "bb_live_cid_xxx",
+                    "client_secret_prefix": "bb_live_sk",
+                    "is_active": true,
+                    "created_at": "2024-01-01",
+                    "rotated_at": null
+                },
+                "sandbox": null
+            })));
+        });
+        let client = make_client(&server);
+        let creds = client.app_credentials("tok", "app-uuid-1").await.unwrap();
+        assert_eq!(creds.app_name, "MySaaS");
+        assert!(creds.sandbox_enabled);
+        assert!(creds.live.is_some());
+        let live = creds.live.unwrap();
+        assert_eq!(live.environment, "live");
+        assert!(live.is_active);
+    }
+
+    #[tokio::test]
+    async fn test_enable_sandbox() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(PATCH).path("/api/apps/app-uuid-1");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        client.enable_sandbox("tok", "app-uuid-1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rotate_credentials() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/apps/app-uuid-1/credentials/live/rotate");
+            then.status(200).json_body(wrap_data(json!({
+                "client_id": "bb_live_cid_new",
+                "client_secret": "bb_live_sk_new"
+            })));
+        });
+        let client = make_live_client(&server);
+        let result = client.rotate_credentials("tok", "app-uuid-1", "live").await.unwrap();
+        assert_eq!(result["client_id"], "bb_live_cid_new");
+    }
+
+    // ── create_subscription ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_subscription() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/subscriptions");
+            then.status(200).json_body(wrap_data(json!({
+                "id": 2,
+                "user_uuid": "00000000-0000-0000-0000-000000000001",
+                "price_id": 3,
+                "provider": "stripe",
+                "provider_subscription_id": "sub_yyy",
+                "status": "trialing",
+                "created_at": "2024-01-01",
+                "updated_at": "2024-01-01"
+            })));
+        });
+        let client = make_client(&server);
+        let body = json!({"price_id": 3});
+        let sub = client.create_subscription("tok", &body).await.unwrap();
+        assert_eq!(sub.status, "trialing");
+    }
+
+    // ── error: unexpected status ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_error_unexpected_status() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/wallet");
+            then.status(503).body("Service Unavailable");
+        });
+        let client = make_client(&server);
+        let result = client.wallet("tok").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Unexpected { status, .. } => assert_eq!(status, 503),
+            Error::Api { status, .. } => assert_eq!(status, 503),
+            e => panic!("unexpected error: {:?}", e),
+        }
+    }
+
+    // ── error: api error with message-only shape ───────────────────────────
+
+    #[tokio::test]
+    async fn test_error_message_only_shape() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/wallet");
+            then.status(403)
+                .json_body(json!({"message": "Forbidden"}));
+        });
+        let client = make_client(&server);
+        let result = client.wallet("tok").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Api { message, status, .. } => {
+                assert_eq!(status, 403);
+                assert_eq!(message, "Forbidden");
+            }
+            e => panic!("unexpected: {:?}", e),
+        }
+    }
+
+    // ── verify_token / verify_bearer — bad token ──────────────────────────
+
+    #[tokio::test]
+    async fn test_verify_token_bad_format() {
+        let client = make_client(&MockServer::start());
+        let result = client.verify_token("not.a.jwt").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_verify_bearer_missing_header() {
+        let client = make_client(&MockServer::start());
+        let headers = http::HeaderMap::new();
+        let result = client.verify_bearer(&headers).await;
+        assert!(result.is_err());
+    }
+}
