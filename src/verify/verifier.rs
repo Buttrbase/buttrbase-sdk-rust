@@ -139,4 +139,148 @@ mod tests {
         let auth: AuthContext = c.into();
         assert_eq!(auth.scopes, vec!["read:pages".to_string()]);
     }
+
+    #[test]
+    fn test_claims_scope_default_empty() {
+        let json = r#"{"sub":"00000000-0000-0000-0000-000000000000","org":"00000000-0000-0000-0000-000000000001","exp":9999999999,"iat":0}"#;
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        assert!(claims.scope.is_empty());
+    }
+
+    #[test]
+    fn test_claims_scope_populated() {
+        let json = r#"{"sub":"00000000-0000-0000-0000-000000000000","org":"00000000-0000-0000-0000-000000000001","exp":9999999999,"iat":0,"scope":["read:users","write:users"]}"#;
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.scope, vec!["read:users", "write:users"]);
+    }
+
+    #[test]
+    fn test_authcontext_from_claims_copies_fields() {
+        let uid = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let oid = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let c = Claims {
+            sub: uid,
+            org: oid,
+            exp: 1000,
+            iat: 500,
+            scope: vec!["admin".to_string()],
+        };
+        let auth: AuthContext = c.into();
+        assert_eq!(auth.user_id, uid);
+        assert_eq!(auth.org_id, oid);
+        assert_eq!(auth.scopes, vec!["admin"]);
+    }
+
+    #[test]
+    fn test_verifier_audience_accessor() {
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: "my-app".to_string(),
+        };
+        let v = Verifier::new(cfg);
+        assert_eq!(v.audience(), "my-app");
+    }
+
+    #[test]
+    fn test_verifier_issuer_accessor() {
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://issuer.example.com".to_string(),
+            audience: "aud".to_string(),
+        };
+        let v = Verifier::new(cfg);
+        assert_eq!(v.issuer(), "https://issuer.example.com");
+    }
+
+    #[tokio::test]
+    async fn test_verify_bearer_missing_header() {
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: "aud".to_string(),
+        };
+        let v = Verifier::new(cfg);
+        let headers = http::HeaderMap::new();
+        let result = v.verify_bearer(&headers).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VerifyError::MissingBearer => {},
+            e => panic!("expected MissingBearer, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verify_bearer_not_bearer_scheme() {
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: "aud".to_string(),
+        };
+        let v = Verifier::new(cfg);
+        let mut headers = http::HeaderMap::new();
+        headers.insert("authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
+        let result = v.verify_bearer(&headers).await;
+        assert!(matches!(result.unwrap_err(), VerifyError::MissingBearer));
+    }
+
+    #[tokio::test]
+    async fn test_verify_bad_token_format() {
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: "aud".to_string(),
+        };
+        let v = Verifier::new(cfg);
+        // Not a valid JWT
+        let result = v.verify("not.a.jwt.at.all").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VerifyError::BadHeader(_) => {},
+            e => panic!("expected BadHeader, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_missing_kid() {
+        // A JWT with no kid in the header.
+        // Header: {"alg":"RS256"}, Payload: {...}, Sig: dummy
+        // eyJhbGciOiJSUzI1NiJ9 = base64url({"alg":"RS256"})
+        let token = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.fakesig";
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: "aud".to_string(),
+        };
+        let v = Verifier::new(cfg);
+        let result = v.verify(token).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VerifyError::MissingKid => {},
+            e => panic!("expected MissingKid, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_verifier_clone() {
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: "aud".to_string(),
+        };
+        let v = Verifier::new(cfg);
+        let v2 = v.clone();
+        assert_eq!(v2.audience(), "aud");
+    }
+
+    #[test]
+    fn test_verifier_config_debug() {
+        let cfg = VerifierConfig {
+            jwks_url: "url".to_string(),
+            issuer: "iss".to_string(),
+            audience: "aud".to_string(),
+        };
+        let s = format!("{:?}", cfg);
+        assert!(s.contains("aud"));
+    }
 }

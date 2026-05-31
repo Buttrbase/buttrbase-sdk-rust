@@ -92,3 +92,131 @@ impl JwksCache {
         DecodingKey::from_jwk(jwk).ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::prelude::*;
+
+    fn minimal_jwks() -> serde_json::Value {
+        // A minimal JWKS with a single RSA key (key id = "test-kid")
+        serde_json::json!({
+            "keys": [
+                {
+                    "kty": "RSA",
+                    "kid": "test-kid",
+                    "use": "sig",
+                    "alg": "RS256",
+                    "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+                    "e": "AQAB"
+                }
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn test_cache_starts_empty() {
+        let cache = JwksCache::new();
+        // key_for returns None when cache is empty
+        let key = cache.key_for("any-kid").await;
+        assert!(key.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_maybe_refresh_fetches_on_first_call() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks.json");
+            then.status(200).json_body(minimal_jwks());
+        });
+        let cache = JwksCache::new();
+        let url = format!("{}/jwks.json", server.base_url());
+        cache.maybe_refresh(&url, false).await.unwrap();
+        // After fetch, key_for returns Some for "test-kid"
+        let key = cache.key_for("test-kid").await;
+        assert!(key.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_maybe_refresh_returns_none_for_unknown_kid() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks.json");
+            then.status(200).json_body(minimal_jwks());
+        });
+        let cache = JwksCache::new();
+        let url = format!("{}/jwks.json", server.base_url());
+        cache.maybe_refresh(&url, false).await.unwrap();
+        let key = cache.key_for("unknown-kid").await;
+        assert!(key.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_maybe_refresh_fails_on_server_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks.json");
+            then.status(500).body("Internal Server Error");
+        });
+        let cache = JwksCache::new();
+        let url = format!("{}/jwks.json", server.base_url());
+        let result = cache.maybe_refresh(&url, false).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VerifyError::JwksFetch(msg) => assert!(msg.contains("500")),
+            e => panic!("unexpected error: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_maybe_refresh_fails_on_bad_json() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks.json");
+            then.status(200).body("not valid json");
+        });
+        let cache = JwksCache::new();
+        let url = format!("{}/jwks.json", server.base_url());
+        let result = cache.maybe_refresh(&url, false).await;
+        assert!(result.is_err());
+        // Either JwksFetch or JwksParse (reqwest may fail at parse stage)
+        match result.unwrap_err() {
+            VerifyError::JwksParse(_) | VerifyError::JwksFetch(_) => {},
+            e => panic!("unexpected error: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_force_refresh_updates_last_refetch() {
+        let server = MockServer::start();
+        // Serve JWKS twice (normal + force)
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks.json");
+            then.status(200).json_body(minimal_jwks());
+        });
+        let cache = JwksCache::new();
+        let url = format!("{}/jwks.json", server.base_url());
+        // First fetch
+        cache.maybe_refresh(&url, false).await.unwrap();
+        // Force fetch should succeed too
+        cache.maybe_refresh(&url, true).await.unwrap();
+        let key = cache.key_for("test-kid").await;
+        assert!(key.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_no_refetch_within_floor_when_forced() {
+        // Two consecutive force calls — the second should be rate-limited
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/jwks.json");
+            then.status(200).json_body(minimal_jwks());
+        });
+        let cache = JwksCache::new();
+        let url = format!("{}/jwks.json", server.base_url());
+        cache.maybe_refresh(&url, true).await.unwrap();
+        cache.maybe_refresh(&url, true).await.unwrap();
+        // The mock was only called once (second force is rate-limited)
+        assert_eq!(mock.hits(), 1);
+    }
+}
