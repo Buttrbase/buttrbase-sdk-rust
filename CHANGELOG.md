@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 — 2026-06-02 — jsonwebtoken 9 → 10 + app_uuid migration
+
+### Breaking (dependency)
+
+- Bumped `jsonwebtoken` from `9.3` to `10.4.0` with `features = ["aws_lc_rs"]`. SDK public API is unchanged; this is a transitive dependency change. **If your app also depends on `jsonwebtoken` 10 directly (or via another transitive dep), you must enable exactly one of the `aws_lc_rs` / `rust_crypto` features on that dep — otherwise your app will SIGABRT on first JWT operation.** See README "Compatibility & gotchas" for the full explanation.
+- This is NOT the same as `rustls`'s `CryptoProvider::install_default()` — jsonwebtoken 10 has its own internal crypto-provider abstraction selected by Cargo features at compile time.
+
+### Why
+
+`jsonwebtoken 10` introduced an internal `CryptoProvider` selected by feature flags at compile time. Without `aws_lc_rs` or `rust_crypto` enabled, every JWT operation panics. The SDK now pins `aws_lc_rs` so this Just Works for SDK consumers. ButtrBase backend hit this in production 2026-06-02 (~20-hour login outage); see `buttrbase-backend-rust/docs/CANONICAL_DEPS.md` for the canonical explanation.
+
+---
+
 ## Unreleased — app_uuid migration
 
 ### Breaking

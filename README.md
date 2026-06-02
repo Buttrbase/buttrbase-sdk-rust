@@ -7,6 +7,21 @@
 > additions (API-key exchange, OAuth start helper, app-level key & OAuth
 > config admin, audit log).
 
+> **0.2.0 dependency bump — `jsonwebtoken` 9 → 10.** Transitive change; SDK
+> public API unchanged. The SDK pins `jsonwebtoken = { version = "10",
+> features = ["aws_lc_rs"] }` internally so this Just Works for you. **If you
+> also depend on `jsonwebtoken` 10 directly elsewhere in your app**, make
+> sure your own dependency line enables exactly one of `aws_lc_rs` or
+> `rust_crypto`, otherwise your app will SIGABRT on the first JWT op:
+>
+> ```toml
+> # In YOUR Cargo.toml — if you use jsonwebtoken 10 directly
+> jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+> ```
+>
+> Don't enable both; the panic message asks for exactly one. See
+> "Compatibility & gotchas" below for the full explanation.
+
 ## Overview
 
 The official Rust SDK for ButtrBase. Two surfaces, one crate:
@@ -18,9 +33,39 @@ The official Rust SDK for ButtrBase. Two surfaces, one crate:
 
 ```toml
 [dependencies]
-buttrbase-sdk = "0.1"
+buttrbase-sdk = "0.2"
 tokio = { version = "1", features = ["full"] }
 ```
+
+## Compatibility & gotchas
+
+### `jsonwebtoken 10` requires a crypto-provider feature flag
+
+ButtrBase signs JWTs with RS256 and the SDK verifies them via `jsonwebtoken 10`.
+That crate's default features (`["use_pem"]`) **do not enable a crypto provider** —
+you must opt into exactly one of:
+
+- `aws_lc_rs` — the default we pin in this SDK (FIPS-able, shared with rustls)
+- `rust_crypto` — pure-Rust alternative
+
+The SDK takes care of this internally. **You only need to act if you ALSO use
+`jsonwebtoken` 10 directly in your own code** (or transitively from another
+dep): add `features = ["aws_lc_rs"]` to your own `jsonwebtoken` dependency line,
+or your app will panic on first JWT operation with:
+
+```
+thread 'tokio-rt-worker' panicked at jsonwebtoken-10.x/src/crypto/mod.rs:
+Could not automatically determine the process-level CryptoProvider...
+```
+
+This is NOT the same as `rustls`'s `CryptoProvider::install_default()` —
+`jsonwebtoken` has its own independent crypto-provider abstraction that's
+selected at compile time. Installing the `rustls` provider at runtime does not
+fix the `jsonwebtoken` panic.
+
+If you need `rust_crypto` instead of `aws_lc_rs` (e.g., environments where you
+can't link `aws-lc-sys` C bindings), open an issue — we'll expose a feature
+flag in a future release.
 
 ## Client Setup
 
