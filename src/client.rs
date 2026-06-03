@@ -6,12 +6,14 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::models::{
-    AdminPortalToken, ApiKeySummary, AppRpConfig, AuditEvent, AuditLogQuery, AuditRow, AuthEvent,
-    ButtrBaseErrorResponse, Certificate, CertificateAuthority, CheckoutResponse, Coupon,
-    CreateApiKeyRequest, CreateCredentialsRequest, CreateDeviceAccountRequest,
+    AcceptInvitationResponse, AdminPortalToken, ApiKeySummary, AppRpConfig, AuditEvent,
+    AuditLogQuery, AuditRow, AuthEvent, ButtrBaseErrorResponse, Certificate, CertificateAuthority,
+    CheckOrgNameResponse, CheckoutResponse, Coupon, CreateApiKeyRequest, CreateCredentialsRequest,
+    CreateDeviceAccountRequest, CreateInvitationRequest, CreateInvitationResponse,
     CreateOAuthConfigRequest, CreatePaymentCheckoutRequest, CreateSsoConnectionRequest,
     CreatedKeyResponse, Credentials, CredentialsDetails, DataEnvelope, Domain,
-    EntitlementCheckRequest, EntitlementCheckResponse, ExchangeResponse, GiftCardValidation,
+    EntitlementCheckRequest, EntitlementCheckResponse, ExchangeResponse,
+    FinalizeRegistrationRequest, GiftCardValidation, InvitationListItem, InvitationPreview,
     Invoice, JitGrant, LoginResponse, MfaEnrollResponse, MfaStatusResponse, OAuthConfigSummary,
     OAuthProvider, OrgFeature, PasskeyAuthChallenge, PasskeyAuthComplete, PasskeyListItem,
     PasskeyRegistrationChallenge, PasskeyRegistrationComplete, PasskeyRegistrationResult,
@@ -665,12 +667,145 @@ impl ButtrBaseClient {
 
     // ── Registration ─────────────────────────────────────────────────────────
 
+    /// Legacy single-call registration — auto-creates an org named after
+    /// `org_name`. Deprecated in 0.3.0 because the auto-create model
+    /// collides on the second sign-up from any domain and doesn't support
+    /// invitations.
+    ///
+    /// Use [`Self::finalize_registration`] going forward. Still works
+    /// against the live API for backward compatibility, and will keep
+    /// working through 0.x.
+    #[deprecated(
+        since = "0.3.0",
+        note = "use `finalize_registration` with an explicit `OrgChoice` instead. See README for the migration recipe."
+    )]
     pub async fn register(
         &self,
         data: &RegisterRequest<'_>,
     ) -> Result<LoginResponse, ButtrBaseClientError> {
         self.request(Method::POST, "/api/auth/register", Some(data))
             .await
+    }
+
+    /// New (0.3.0+) registration entry point. The caller supplies an
+    /// explicit [`OrgChoice`] — either creating a new org by name or
+    /// accepting an invitation. The standard flow is:
+    ///
+    /// 1. [`Self::send_otp`] → user gets an email code
+    /// 2. [`Self::verify_otp`] → exchange code for `signup_token`
+    /// 3. **`finalize_registration`** → submit `org_choice`
+    ///
+    /// Returns the same session-token shape as the legacy `register`.
+    pub async fn finalize_registration(
+        &self,
+        data: &FinalizeRegistrationRequest<'_>,
+    ) -> Result<LoginResponse, ButtrBaseClientError> {
+        self.request(Method::POST, "/api/auth/finalize-registration", Some(data))
+            .await
+    }
+
+    /// Live availability + format check for a proposed org name. Public —
+    /// no auth required. Use to drive a debounced check in a signup UI:
+    /// recommend calling on every keystroke past 2 chars, with 300-400ms
+    /// debounce. `reason` is one of `empty | too_short | too_long |
+    /// invalid_chars | taken` when `available` is false.
+    pub async fn check_org_name(
+        &self,
+        name: &str,
+    ) -> Result<CheckOrgNameResponse, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/check-org-name?name={}", urlencoding::encode(name)),
+            None::<&()>,
+        )
+        .await
+    }
+
+    // ── Org Invitations ────────────────────────────────────────────────────
+
+    /// Create an invitation. Caller must be authenticated and have role
+    /// `admin` or `owner` on the org. The returned `token` (and the
+    /// bundled `signup_url`) are shown **once** — the server only stores
+    /// `SHA-256(token)`. Capture or share immediately.
+    pub async fn create_invitation(
+        &self,
+        org_uuid: &str,
+        data: &CreateInvitationRequest<'_>,
+    ) -> Result<CreateInvitationResponse, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/orgs/{}/invitations", urlencoding::encode(org_uuid)),
+            Some(data),
+        )
+        .await
+    }
+
+    /// Public preview of an invitation token. Use to show "you're invited
+    /// to Acme Inc as member" before the user fills out the rest of the
+    /// signup form. Always returns a 200; check `valid` + `invalid_reason`
+    /// on the body.
+    pub async fn preview_invitation(
+        &self,
+        token: &str,
+    ) -> Result<InvitationPreview, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/auth/invitations/{}", urlencoding::encode(token)),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Accept an invitation as an already-signed-in user (joining an
+    /// additional org). Brand-new users consume the invitation via
+    /// [`Self::finalize_registration`] with [`OrgChoice::AcceptInvite`]
+    /// instead.
+    pub async fn accept_invitation(
+        &self,
+        token: &str,
+    ) -> Result<AcceptInvitationResponse, ButtrBaseClientError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "/api/auth/invitations/{}/accept",
+                urlencoding::encode(token)
+            ),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// List all invitations for an org (pending, accepted, revoked,
+    /// expired). Admin/owner only.
+    pub async fn list_invitations(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<InvitationListItem>, ButtrBaseClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/orgs/{}/invitations", urlencoding::encode(org_uuid)),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Revoke a pending invitation. Already-accepted invitations cannot
+    /// be revoked. Admin/owner only.
+    pub async fn revoke_invitation(
+        &self,
+        org_uuid: &str,
+        invitation_id: i32,
+    ) -> Result<serde_json::Value, ButtrBaseClientError> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/api/orgs/{}/invitations/{}",
+                urlencoding::encode(org_uuid),
+                invitation_id
+            ),
+            None::<&()>,
+        )
+        .await
     }
 
     pub async fn get_login_options(
@@ -2598,18 +2733,11 @@ impl ButtrBaseClient {
             .await
     }
 
-    /// Check whether an organisation name is available (case-sensitive).
-    pub async fn check_org_name(
-        &self,
-        name: &str,
-    ) -> Result<crate::models::OrgCheckResponse, ButtrBaseClientError> {
-        self.request(
-            Method::GET,
-            &format!("/api/auth/orgs/check?name={}", urlencoding::encode(name)),
-            None::<&()>,
-        )
-        .await
-    }
+    // Note: the older `check_org_name` that hit /api/auth/orgs/check has
+    // been replaced by the 0.3.0 version higher up in this file (which
+    // hits /api/auth/check-org-name — the path the current Rust backend
+    // actually serves). `OrgCheckResponse` is retained in models for
+    // backwards compatibility but no longer referenced by client code.
 
     /// Look up the superuser flag for a given email address.
     /// Requires platform-admin authentication.

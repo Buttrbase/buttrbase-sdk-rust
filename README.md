@@ -1,5 +1,20 @@
 # Rust SDK
 
+> **0.3.0 — org-aware registration + invitations.** `register()` is now
+> deprecated in favor of the new `finalize_registration()` flow. The old
+> auto-create-by-domain behavior collided on the second sign-up from any
+> domain and made invitations impossible. The new flow is:
+>
+> ```
+> send_otp → verify_otp → finalize_registration(with OrgChoice)
+> ```
+>
+> where `OrgChoice` is either `Create { name }` or `AcceptInvite {
+> invitation_token }`. New methods cover org-invitation lifecycle:
+> `create_invitation`, `preview_invitation`, `accept_invitation`,
+> `list_invitations`, `revoke_invitation`. See CHANGELOG for the full
+> migration recipe.
+
 > **Breaking change (unreleased) — `app_uuid` migration.** `send_otp`,
 > `verify_otp`, `magic_link_send`, and `register` now take `app_uuid: Uuid`
 > in place of the old `app: &str` slug. Slug-based app identifiers are no
@@ -33,7 +48,7 @@ The official Rust SDK for ButtrBase. Two surfaces, one crate:
 
 ```toml
 [dependencies]
-buttrbase-sdk = "0.2"
+buttrbase-sdk = "0.3"
 tokio = { version = "1", features = ["full"] }
 ```
 

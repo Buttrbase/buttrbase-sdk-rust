@@ -247,6 +247,102 @@ pub struct RegisterRequest<'a> {
     pub last_name: Option<&'a str>,
 }
 
+// ── Auth: finalize-registration (0.3.0+) ─────────────────────────────────────
+//
+// Replaces the legacy `RegisterRequest`. Instead of unconditionally creating
+// an org named after the email's domain, the caller provides an explicit
+// `OrgChoice` — either creating a new org by name or accepting an
+// invitation by token. See README "Compatibility & gotchas" for the
+// migration recipe from 0.2.x.
+
+/// Tagged enum: what to do about the org during finalize-registration.
+#[derive(Serialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OrgChoice<'a> {
+    /// Create a brand-new organization with this name. The new user becomes
+    /// the admin. Server validates uniqueness — a 409 with body
+    /// `{"error": "...taken..."}` means the name was just claimed.
+    Create { name: &'a str },
+    /// Consume an existing org's invitation. The user is added with the
+    /// role on the invitation.
+    AcceptInvite { invitation_token: &'a str },
+}
+
+#[derive(Serialize, Debug)]
+pub struct FinalizeRegistrationRequest<'a> {
+    pub email: &'a str,
+    pub password: &'a str,
+    pub app_uuid: Uuid,
+    pub signup_token: &'a str,
+    pub org_choice: OrgChoice<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<&'a str>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CheckOrgNameResponse {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub normalized: String,
+}
+
+// ── Org Invitations ──────────────────────────────────────────────────────────
+
+#[derive(Serialize, Debug, Default)]
+pub struct CreateInvitationRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<&'a str>,
+    /// Lifetime of the invitation. Server-clamped to [1, 720].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in_hours: Option<i64>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CreateInvitationResponse {
+    pub id: i32,
+    pub org_uuid: Uuid,
+    pub email: Option<String>,
+    pub role: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// PLAINTEXT token — server only stores `SHA-256(token)`. Capture or
+    /// share via `signup_url` immediately; it can't be re-fetched.
+    pub token: String,
+    pub signup_url: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct InvitationPreview {
+    pub org_uuid: Uuid,
+    pub org_name: String,
+    pub email: Option<String>,
+    pub role: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub valid: bool,
+    /// One of `expired | accepted | revoked | not_found`.
+    pub invalid_reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AcceptInvitationResponse {
+    pub org_uuid: Uuid,
+    pub org_name: String,
+    pub role: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct InvitationListItem {
+    pub id: i32,
+    pub email: Option<String>,
+    pub role: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub accepted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 // ── MFA / TOTP ───────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Debug)]

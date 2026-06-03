@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.3.0 — 2026-06-03 — org-aware registration + invitations
+
+### Added
+
+- **`finalize_registration(&FinalizeRegistrationRequest)`** — the new registration entry point. Replaces the legacy `register()` auto-create-by-domain behavior with an explicit `OrgChoice` (either `Create { name }` or `AcceptInvite { invitation_token }`). The full flow is now: `send_otp` → `verify_otp` → `finalize_registration`. See README "Compatibility & gotchas" for the migration recipe.
+- **`OrgChoice<'a>`** — tagged enum surfacing the two registration paths.
+- **`FinalizeRegistrationRequest<'a>`** — strongly-typed request body.
+- **`check_org_name(name)`** → `CheckOrgNameResponse`. Replaces the prior `/api/auth/orgs/check` shim (which targeted a route the live Rust backend doesn't serve). Now hits `/api/auth/check-org-name`. Returns `{ available, reason, normalized }` where `reason ∈ { empty, too_short, too_long, invalid_chars, taken }`.
+- **`create_invitation(org_uuid, &CreateInvitationRequest)`** → `CreateInvitationResponse` (includes the one-time-shown plaintext token + a ready-to-share `signup_url`).
+- **`preview_invitation(token)`** → `InvitationPreview` (public, no auth — for "you're invited to Acme Inc" UI before signup).
+- **`accept_invitation(token)`** → `AcceptInvitationResponse` (for already-logged-in users joining an additional org; brand-new users consume the invite via `finalize_registration` with `OrgChoice::AcceptInvite`).
+- **`list_invitations(org_uuid)`** + **`revoke_invitation(org_uuid, invitation_id)`** for the admin management UI.
+
+### Deprecated
+
+- **`register(&RegisterRequest)`** — kept working against the live API (server-side `/api/auth/register` is unchanged for backward compat) but emits `#[deprecated]`. Migrate to `finalize_registration`. The legacy method always auto-created an org named after the email's domain — that broke the second sign-up from any domain and made invitations impossible.
+
+### Migration recipe (0.2.x → 0.3.0)
+
+```rust
+// Before (0.2):
+let token = client.send_otp(email, app_uuid).await?;
+// (user enters code) — verify, then in one call:
+client.register(&RegisterRequest {
+    email,
+    password: random_password.as_str(),
+    org_name: "acme.com",           // auto-creates org with this name
+    app_uuid,
+    first_name: Some("Alice"),
+    last_name: Some("Smith"),
+}).await?;
+```
+
+```rust
+// After (0.3): split into verify → finalize, with explicit org_choice.
+client.send_otp(email, app_uuid).await?;
+let v = client.verify_otp(email, code, app_uuid).await?;
+client.finalize_registration(&FinalizeRegistrationRequest {
+    email,
+    password: random_password.as_str(),
+    app_uuid,
+    signup_token: &v.token,
+    org_choice: OrgChoice::Create { name: "Acme Inc" },
+    first_name: Some("Alice"),
+    last_name: Some("Smith"),
+}).await?;
+```
+
+Or, to accept an existing org's invitation:
+
+```rust
+org_choice: OrgChoice::AcceptInvite { invitation_token: "Bd9..." },
+```
+
+### Notes — progenitor experiment (investigated, deferred)
+
+We evaluated [progenitor](https://docs.rs/progenitor) (Oxide's OpenAPI client generator) as a path to auto-generate the SDK from the [`buttrbase-openapi`](https://github.com/S7-Works/buttrbase-openapi) spec. Build pipeline + spec preprocessing were proved out, but progenitor 0.10 hit three hard friction points against the existing spec:
+
+1. Required `operationId` on every operation (most legacy endpoints don't have one). **Workaround**: synthesized deterministic IDs from `method + path` in build.rs.
+2. Refused unknown content types (`application/ocsp-request` was the trigger). **Workaround**: pre-filter the spec to skip endpoints by path pattern.
+3. **Stopper**: internal assertion `response_types.len() <= 1` panicked on endpoints with multiple distinct success/error response schemas. No configuration knob.
+
+Decision: defer the generator migration. Re-evaluate when either (a) progenitor catches up on multi-response support, or (b) we have time to normalize the spec to a stricter subset, or (c) we evaluate alternatives (oxide-progenitor-fork, openapi-generator-cli with rust-server template, or hand-rolling via openapi-typescript-codegen-style logic). Hand-written client remains the canonical surface for 0.3.x.
+
+### Dependency changes
+
+- No new runtime deps in 0.3.0. (The progenitor experiment used build-deps that have been removed.)
+
+---
+
 ## 0.2.0 — 2026-06-02 — jsonwebtoken 9 → 10 + app_uuid migration
 
 ### Breaking (dependency)
