@@ -43,3 +43,77 @@ pub enum VerifyError {
     #[error("missing Bearer authorization")]
     MissingBearer,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_jwks_fetch_display() {
+        let e = VerifyError::JwksFetch("connection refused".to_string());
+        let s = format!("{}", e);
+        assert!(s.contains("jwks fetch failed"));
+        assert!(s.contains("connection refused"));
+    }
+
+    #[test]
+    fn test_jwks_parse_display() {
+        let e = VerifyError::JwksParse("invalid json".to_string());
+        let s = format!("{}", e);
+        assert!(s.contains("jwks parse failed"));
+        assert!(s.contains("invalid json"));
+    }
+
+    #[test]
+    fn test_bad_header_display() {
+        let e = VerifyError::BadHeader("malformed header".to_string());
+        let s = format!("{}", e);
+        assert!(s.contains("token header invalid"));
+        assert!(s.contains("malformed header"));
+    }
+
+    #[test]
+    fn test_missing_kid_display() {
+        let e = VerifyError::MissingKid;
+        let s = format!("{}", e);
+        assert!(s.contains("missing kid"));
+    }
+
+    #[test]
+    fn test_kid_not_found_display() {
+        let e = VerifyError::KidNotFound("my-key-id".to_string());
+        let s = format!("{}", e);
+        assert!(s.contains("kid not found"));
+        assert!(s.contains("my-key-id"));
+    }
+
+    #[test]
+    fn test_invalid_token_display() {
+        let e = VerifyError::InvalidToken("expired".to_string());
+        let s = format!("{}", e);
+        assert!(s.contains("token invalid"));
+        assert!(s.contains("expired"));
+    }
+
+    #[test]
+    fn test_missing_bearer_display() {
+        let e = VerifyError::MissingBearer;
+        let s = format!("{}", e);
+        assert!(s.contains("Bearer"));
+    }
+
+    #[test]
+    fn test_debug_format() {
+        let e = VerifyError::MissingKid;
+        let s = format!("{:?}", e);
+        assert!(s.contains("MissingKid"));
+    }
+
+    #[test]
+    fn test_error_is_std_error() {
+        // VerifyError implements std::error::Error (via thiserror)
+        let e: Box<dyn std::error::Error> = Box::new(VerifyError::MissingBearer);
+        let s = format!("{}", e);
+        assert!(!s.is_empty());
+    }
+}

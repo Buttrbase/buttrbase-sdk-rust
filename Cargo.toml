@@ -35,3 +35,5 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "cloc
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+httpmock = "0.7"
+serde_json = "1.0"
