@@ -621,6 +621,165 @@ impl ButtrBaseClient {
             .await?;
         Ok(resp.data)
     }
+
+    // ── Password reset (no auth) ──────────────────────────────────────────
+
+    /// Request a password-reset email for `email`. No app credentials are
+    /// sent — this endpoint is publicly accessible.
+    pub async fn request_password_reset(&self, email: &str) -> Result<serde_json::Value, Error> {
+        let body = serde_json::json!({ "email": email });
+        self.send(
+            self.http
+                .request(
+                    Method::POST,
+                    format!("{}/api/auth/request-password-reset", self.base_url),
+                )
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Complete a password reset using the `token` from the reset email and
+    /// the new `password`. No app credentials are sent.
+    pub async fn reset_password(
+        &self,
+        token: &str,
+        password: &str,
+    ) -> Result<serde_json::Value, Error> {
+        let body = serde_json::json!({ "token": token, "password": password });
+        self.send(
+            self.http
+                .request(
+                    Method::POST,
+                    format!("{}/api/auth/reset-password", self.base_url),
+                )
+                .json(&body),
+        )
+        .await
+    }
+
+    // ── Webhooks (app auth) ───────────────────────────────────────────────
+
+    /// List all webhooks registered for this app.
+    pub async fn list_webhooks(&self) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(Method::GET, "/api/v1/webhooks"))
+            .await
+    }
+
+    /// Register a new webhook endpoint.
+    ///
+    /// * `url`            — HTTPS URL that will receive webhook payloads.
+    /// * `event_types`    — List of event type strings to subscribe to.
+    /// * `signing_secret` — Optional HMAC signing secret for payload verification.
+    /// * `description`    — Optional human-readable label.
+    pub async fn create_webhook(
+        &self,
+        url: &str,
+        event_types: Vec<String>,
+        signing_secret: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<serde_json::Value, Error> {
+        let mut body = serde_json::json!({
+            "url": url,
+            "event_types": event_types,
+        });
+        if let Some(s) = signing_secret {
+            body["signing_secret"] = serde_json::Value::String(s.to_string());
+        }
+        if let Some(d) = description {
+            body["description"] = serde_json::Value::String(d.to_string());
+        }
+        self.send(
+            self.app_request(Method::POST, "/api/v1/webhooks")
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Delete a webhook by its integer ID. Returns `()` on success (HTTP 204).
+    pub async fn delete_webhook(&self, webhook_id: i32) -> Result<(), Error> {
+        self.send_empty(self.app_request(
+            Method::DELETE,
+            &format!("/api/v1/webhooks/{}", webhook_id),
+        ))
+        .await
+    }
+
+    /// List delivery attempts for a webhook.
+    pub async fn list_webhook_deliveries(
+        &self,
+        webhook_id: i32,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(
+            Method::GET,
+            &format!("/api/v1/webhooks/{}/deliveries", webhook_id),
+        ))
+        .await
+    }
+
+    /// Retry a specific webhook delivery attempt.
+    pub async fn retry_webhook_delivery(
+        &self,
+        webhook_id: i32,
+        delivery_id: i32,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(
+            Method::POST,
+            &format!(
+                "/api/v1/webhooks/{}/deliveries/{}/retry",
+                webhook_id, delivery_id
+            ),
+        ))
+        .await
+    }
+
+    // ── OAuth connections (app auth) ──────────────────────────────────────
+
+    /// Force a token refresh for the given OAuth `provider` connection
+    /// (e.g. `"github"`, `"google"`).
+    pub async fn refresh_oauth_connection(
+        &self,
+        provider: &str,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(
+            Method::POST,
+            &format!("/v1/oauth/connections/{}/refresh", provider),
+        ))
+        .await
+    }
+
+    // ── Email (app auth) ──────────────────────────────────────────────────
+
+    /// Send a transactional email via the ButtrBase email service.
+    ///
+    /// At least one of `html_body` or `text_body` should be provided.
+    pub async fn send_email(
+        &self,
+        to: &str,
+        subject: &str,
+        html_body: Option<&str>,
+        text_body: Option<&str>,
+        from_address: Option<&str>,
+    ) -> Result<serde_json::Value, Error> {
+        let mut body = serde_json::json!({
+            "to": to,
+            "subject": subject,
+        });
+        if let Some(h) = html_body {
+            body["html_body"] = serde_json::Value::String(h.to_string());
+        }
+        if let Some(t) = text_body {
+            body["text_body"] = serde_json::Value::String(t.to_string());
+        }
+        if let Some(f) = from_address {
+            body["from_address"] = serde_json::Value::String(f.to_string());
+        }
+        self.send(
+            self.app_request(Method::POST, "/api/email/send")
+                .json(&body),
+        )
+        .await
+    }
 }
 
 // ── Response parsing helpers ──────────────────────────────────────────────
