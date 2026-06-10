@@ -41,7 +41,7 @@
 
 The official Rust SDK for ButtrBase. Two surfaces, one crate:
 
-- **Client** — call the ButtrBase API from your Rust service (auth, organizations, billing, RBAC, teams, credentials, search, AI gateway, webhooks, and more).
+- **Client** — call the ButtrBase API from your Rust service (auth, organizations, billing, RBAC, teams, credentials, webhooks, KMS status, payment methods, org members, OAuth configs, SAML cert rollover, and more).
 - **Verifier** — verify ButtrBase-issued JWTs in your own Rust service for federated auth.
 
 ## Installation

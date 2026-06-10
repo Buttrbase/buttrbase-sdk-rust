@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — session revocation, KMS status, payment methods, org members, OAuth configs, SAML cert rollover
+
+### Added
+
+- **`revoke_session_token(token)`** → `()` — POST `/api/admin/sessions/revoke`. Immediately invalidates a bearer or refresh token.
+- **`list_revoked_tokens()`** → `Vec<RevokedTokenEntry>` — GET `/api/admin/sessions/revoked`. Returns all explicitly-revoked tokens with hash, timestamp, and optional reason.
+- **`kms_status()`** → `KmsStatusResponse` — GET `/api/admin/kms/status`. Returns KMS provider name, operational status, key count, and last rotation timestamp.
+- **`list_payment_methods(bearer)`** → `Vec<PaymentMethod>` — GET `/api/v1/customers/me/payment-methods`.
+- **`create_payment_method(req, bearer)`** → `PaymentMethod` — POST `/api/v1/customers/me/payment-methods`. Attaches a provider token (e.g. Stripe `pm_…`) as a new saved method.
+- **`set_default_payment_method(id, bearer)`** → `()` — POST `/api/v1/customers/me/payment-methods/{id}/default`.
+- **`delete_payment_method(id, bearer)`** → `()` — DELETE `/api/v1/customers/me/payment-methods/{id}`.
+- **`list_org_members(org_uuid)`** → `Vec<OrgMember>` — GET `/api/v2/organizations/{org_uuid}/members`.
+- **`list_oauth_configs(app_uuid)`** → `Vec<OAuthConfigSummary>` — GET `/api/v1/apps/{app_uuid}/oauth-configs`.
+- **`rollover_saml_certificates(org_uuid, connection_uuid)`** → `serde_json::Value` — PUT `/api/organizations/{org_uuid}/sso-connections/{connection_uuid}/saml-certificates`. Generates a new SAML signing certificate and returns updated SP metadata.
+- New model types: `RevokeSessionRequest`, `RevokedTokenEntry`, `KmsStatusResponse`, `PaymentMethod`, `CreatePaymentMethodRequest`, `OrgMember`.
+
+### Fixed
+
+- Removed a duplicate `pub struct EntitlementCheckResponse` (with `allowed`/`reason` fields) that shadowed the internal `pub(crate)` deserialization envelope of the same name. The duplicate was dead code and caused a compile error when combined with other features.
+
+---
+
 ## 0.3.0 — 2026-06-03 — org-aware registration + invitations
 
 ### Added
