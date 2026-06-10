@@ -451,12 +451,6 @@ pub struct EntitlementCheckRequest<'a> {
     pub org_uuid: Option<&'a str>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct EntitlementCheckResponse {
-    pub allowed: bool,
-    pub reason: Option<String>,
-}
-
 // ── Coupons / Gift Cards ─────────────────────────────────────────────────────
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -1021,6 +1015,77 @@ pub struct UpdateAppRpConfigRequest {
     pub rp_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rp_origins: Option<Vec<String>>,
+}
+
+// ── Session revocation (admin) ──────────────────────────────────────────────
+
+#[derive(Serialize, Debug, Clone)]
+pub struct RevokeSessionRequest {
+    /// The raw bearer / refresh token to revoke.
+    pub token: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct RevokedTokenEntry {
+    pub id: i64,
+    pub token_hash: String,
+    pub revoked_at: DateTime<Utc>,
+    pub reason: Option<String>,
+}
+
+// ── KMS status (admin) ──────────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct KmsStatusResponse {
+    /// KMS provider name (e.g. `"aws_kms"`, `"internal"`).
+    pub provider: String,
+    /// Operational status: `"healthy"`, `"degraded"`, or `"offline"`.
+    pub status: String,
+    pub key_count: u32,
+    pub last_rotation: Option<DateTime<Utc>>,
+}
+
+// ── Payment methods (user) ──────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct PaymentMethod {
+    /// Provider-side payment method ID (e.g. Stripe `pm_…`).
+    pub id: String,
+    /// Payment provider (e.g. `"stripe"`).
+    pub provider: String,
+    /// Method type: `"card"`, `"us_bank_account"`, etc.
+    pub kind: String,
+    pub last_four: Option<String>,
+    pub exp_month: Option<u32>,
+    pub exp_year: Option<u32>,
+    pub brand: Option<String>,
+    pub is_default: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct CreatePaymentMethodRequest {
+    /// Provider-issued token representing the new payment method
+    /// (e.g. Stripe `PaymentMethod` ID obtained from Stripe.js).
+    pub provider_token: String,
+    /// Payment provider. Defaults to `"stripe"` if omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// If `true`, immediately set this method as the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set_as_default: Option<bool>,
+}
+
+// ── Organization members (admin) ────────────────────────────────────────────
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct OrgMember {
+    pub user_uuid: Uuid,
+    pub email: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub role: String,
+    pub joined_at: DateTime<Utc>,
 }
 
 #[cfg(test)]

@@ -33,6 +33,8 @@ use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use uuid::Uuid;
+
 use crate::error::Error;
 use crate::models::*;
 use crate::verify::{AuthContext, Claims, Verifier, VerifierConfig};
@@ -728,6 +730,146 @@ impl ButtrBaseClient {
             &format!(
                 "/api/v1/webhooks/{}/deliveries/{}/retry",
                 webhook_id, delivery_id
+            ),
+        ))
+        .await
+    }
+
+    // ── Session revocation (admin / app auth) ────────────────────────────
+
+    /// Revoke a specific bearer or refresh token immediately.
+    pub async fn revoke_session_token(&self, token: &str) -> Result<(), Error> {
+        self.send_empty(
+            self.app_request(Method::POST, "/api/admin/sessions/revoke")
+                .json(&RevokeSessionRequest { token: token.to_owned() }),
+        )
+        .await
+    }
+
+    /// List all tokens that have been explicitly revoked.
+    pub async fn list_revoked_tokens(&self) -> Result<Vec<RevokedTokenEntry>, Error> {
+        self.send(self.app_request(Method::GET, "/api/admin/sessions/revoked"))
+            .await
+    }
+
+    // ── KMS status (admin / app auth) ─────────────────────────────────────
+
+    /// Return the current KMS health, provider, and key-count.
+    pub async fn kms_status(&self) -> Result<KmsStatusResponse, Error> {
+        self.send(self.app_request(Method::GET, "/api/admin/kms/status"))
+            .await
+    }
+
+    // ── Payment methods (user auth) ───────────────────────────────────────
+
+    /// List all saved payment methods for the authenticated user.
+    pub async fn list_payment_methods(
+        &self,
+        bearer: &str,
+    ) -> Result<Vec<PaymentMethod>, Error> {
+        self.send(self.user_request(
+            Method::GET,
+            "/api/v1/customers/me/payment-methods",
+            bearer,
+        ))
+        .await
+    }
+
+    /// Attach a new payment method to the authenticated user.
+    pub async fn create_payment_method(
+        &self,
+        req: &CreatePaymentMethodRequest,
+        bearer: &str,
+    ) -> Result<PaymentMethod, Error> {
+        self.send(
+            self.user_request(
+                Method::POST,
+                "/api/v1/customers/me/payment-methods",
+                bearer,
+            )
+            .json(req),
+        )
+        .await
+    }
+
+    /// Promote an existing payment method to the user's default.
+    pub async fn set_default_payment_method(
+        &self,
+        payment_method_id: &str,
+        bearer: &str,
+    ) -> Result<(), Error> {
+        self.send_empty(self.user_request(
+            Method::POST,
+            &format!(
+                "/api/v1/customers/me/payment-methods/{}/default",
+                payment_method_id
+            ),
+            bearer,
+        ))
+        .await
+    }
+
+    /// Detach and delete a payment method from the authenticated user.
+    pub async fn delete_payment_method(
+        &self,
+        payment_method_id: &str,
+        bearer: &str,
+    ) -> Result<(), Error> {
+        self.send_empty(self.user_request(
+            Method::DELETE,
+            &format!(
+                "/api/v1/customers/me/payment-methods/{}",
+                payment_method_id
+            ),
+            bearer,
+        ))
+        .await
+    }
+
+    // ── Organization members (app auth) ───────────────────────────────────
+
+    /// List all members of an organization.
+    pub async fn list_org_members(
+        &self,
+        org_uuid: &Uuid,
+    ) -> Result<Vec<OrgMember>, Error> {
+        self.send(self.app_request(
+            Method::GET,
+            &format!("/api/v2/organizations/{}/members", org_uuid),
+        ))
+        .await
+    }
+
+    // ── App-level OAuth configs (app auth) ────────────────────────────────
+
+    /// List all OAuth provider configurations registered for an app.
+    pub async fn list_oauth_configs(
+        &self,
+        app_uuid: &Uuid,
+    ) -> Result<Vec<OAuthConfigSummary>, Error> {
+        self.send(self.app_request(
+            Method::GET,
+            &format!("/api/v1/apps/{}/oauth-configs", app_uuid),
+        ))
+        .await
+    }
+
+    // ── SSO / SAML certificate rollover (app auth) ────────────────────────
+
+    /// Trigger a SAML signing-certificate rollover for the given SSO
+    /// connection. The backend generates a new certificate and returns the
+    /// updated connection metadata (including the new SP certificate for
+    /// upload to the IdP).
+    pub async fn rollover_saml_certificates(
+        &self,
+        org_uuid: &Uuid,
+        connection_uuid: &Uuid,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(
+            Method::PUT,
+            &format!(
+                "/api/organizations/{}/sso-connections/{}/saml-certificates",
+                org_uuid, connection_uuid
             ),
         ))
         .await
