@@ -281,7 +281,7 @@ impl ButtrBaseClient {
     pub async fn finalize_registration(
         &self,
         req: &FinalizeRegistrationRequest<'_>,
-    ) -> Result<TokenPair, Error> {
+    ) -> Result<RegistrationResult, Error> {
         self.send(
             self.app_request(Method::POST, "/api/v1/auth/finalize-registration")
                 .json(req),
@@ -299,7 +299,7 @@ impl ButtrBaseClient {
         since = "0.3.0",
         note = "use send_otp + verify_otp + finalize_registration instead"
     )]
-    pub async fn register(&self, req: &RegisterRequest<'_>) -> Result<TokenPair, Error> {
+    pub async fn register(&self, req: &RegisterRequest<'_>) -> Result<RegistrationResult, Error> {
         self.send(
             self.app_request(Method::POST, "/api/v1/auth/register")
                 .json(req),
@@ -1246,9 +1246,14 @@ mod tests {
         server.mock(|when, then| {
             when.method(POST).path("/api/v1/auth/finalize-registration");
             then.status(200).json_body(json!({
-                "token": "access_jwt",
+                "access_token":  "access_jwt",
                 "refresh_token": "refresh_jwt",
-                "user_uuid": "00000000-0000-0000-0000-000000000001"
+                "token_type":    "Bearer",
+                "expires_in":    3600,
+                "user_uuid":     "00000000-0000-0000-0000-000000000001",
+                "org_uuid":      "00000000-0000-0000-0000-000000000002",
+                "role":          "admin",
+                "message":       "Registration complete"
             }));
         });
         let client = make_client(&server);
@@ -1261,8 +1266,10 @@ mod tests {
             first_name: Some("Alice"),
             last_name: None,
         };
-        let pair = client.finalize_registration(&req).await.unwrap();
-        assert_eq!(pair.token, "access_jwt");
+        let result = client.finalize_registration(&req).await.unwrap();
+        assert_eq!(result.access_token, "access_jwt");
+        assert_eq!(result.org_uuid, "00000000-0000-0000-0000-000000000002");
+        assert_eq!(result.role, "admin");
     }
 
     #[tokio::test]
@@ -1271,9 +1278,14 @@ mod tests {
         server.mock(|when, then| {
             when.method(POST).path("/api/v1/auth/finalize-registration");
             then.status(200).json_body(json!({
-                "token": "access_jwt",
-                "refresh_token": null,
-                "user_uuid": null
+                "access_token":  "access_jwt",
+                "refresh_token": "refresh_jwt",
+                "token_type":    "Bearer",
+                "expires_in":    3600,
+                "user_uuid":     "00000000-0000-0000-0000-000000000001",
+                "org_uuid":      "00000000-0000-0000-0000-000000000003",
+                "role":          "member",
+                "message":       null
             }));
         });
         let client = make_client(&server);
@@ -1286,8 +1298,10 @@ mod tests {
             first_name: None,
             last_name: None,
         };
-        let pair = client.finalize_registration(&req).await.unwrap();
-        assert_eq!(pair.token, "access_jwt");
+        let result = client.finalize_registration(&req).await.unwrap();
+        assert_eq!(result.access_token, "access_jwt");
+        assert_eq!(result.org_uuid, "00000000-0000-0000-0000-000000000003");
+        assert_eq!(result.role, "member");
     }
 
     // ── register (deprecated) ─────────────────────────────────────────────
@@ -1299,9 +1313,14 @@ mod tests {
         server.mock(|when, then| {
             when.method(POST).path("/api/v1/auth/register");
             then.status(200).json_body(json!({
-                "token": "access_jwt",
+                "access_token":  "access_jwt",
                 "refresh_token": "refresh_jwt",
-                "user_uuid": "00000000-0000-0000-0000-000000000001"
+                "token_type":    "Bearer",
+                "expires_in":    3600,
+                "user_uuid":     "00000000-0000-0000-0000-000000000001",
+                "org_uuid":      "00000000-0000-0000-0000-000000000002",
+                "role":          "admin",
+                "message":       null
             }));
         });
         let client = make_client(&server);
@@ -1313,8 +1332,9 @@ mod tests {
             first_name: Some("Alice"),
             last_name: None,
         };
-        let pair = client.register(&req).await.unwrap();
-        assert_eq!(pair.token, "access_jwt");
+        let result = client.register(&req).await.unwrap();
+        assert_eq!(result.access_token, "access_jwt");
+        assert_eq!(result.org_uuid, "00000000-0000-0000-0000-000000000002");
     }
 
     // ── invitations ───────────────────────────────────────────────────────

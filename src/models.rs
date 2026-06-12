@@ -312,6 +312,62 @@ pub struct FinalizeRegistrationRequest<'a> {
     pub last_name: Option<&'a str>,
 }
 
+/// Returned by `finalize_registration` and the deprecated `register`.
+///
+/// # Full signup contract
+///
+/// **Step 1 — send OTP**
+/// ```text
+/// POST /api/v1/auth/otp/send   (app Basic auth)
+/// { "email": "alice@example.com", "app_uuid": "018f…" }
+/// → 204 No Content
+/// ```
+///
+/// **Step 2 — verify OTP → get signup_token**
+/// ```text
+/// POST /api/v1/auth/otp/verify   (app Basic auth)
+/// { "email": "alice@example.com", "otp": "123456", "app_uuid": "018f…" }
+/// → TokenPair { token: "<signup_token>", refresh_token?, user_uuid? }
+/// ```
+///
+/// **Step 3 — finalize registration**
+/// ```text
+/// POST /api/v1/auth/finalize-registration   (app Basic auth)
+/// {
+///   "email":        "alice@example.com",
+///   "password":     "s3cur3!",
+///   "app_uuid":     "018f…",
+///   "signup_token": "<token from step 2>",
+///   "org_choice": { "type": "create", "name": "Acme Inc" }
+///   // OR:        { "type": "accept_invite", "invitation_token": "Bd9…" }
+///   "first_name":   "Alice",   // optional
+///   "last_name":    "Smith"    // optional
+/// }
+/// → RegistrationResult (see below)
+/// ```
+///
+/// **Org name availability check (before step 3)**
+/// ```text
+/// POST /api/v1/auth/check-org-name   (app Basic auth)
+/// { "name": "Acme Inc" }
+/// → CheckOrgNameResponse { available, reason?, normalized }
+/// ```
+#[derive(Deserialize, Debug, Clone)]
+pub struct RegistrationResult {
+    /// Short-lived JWT — use as `Authorization: Bearer <access_token>`.
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: String,
+    pub expires_in: Option<i64>,
+    pub user_uuid: String,
+    /// UUID of the org that was created or joined.
+    pub org_uuid: String,
+    /// Role the new user holds in that org (`"admin"` for new orgs,
+    /// whatever is on the invitation for `AcceptInvite`).
+    pub role: String,
+    pub message: Option<String>,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct CheckOrgNameResponse {
     pub available: bool,
