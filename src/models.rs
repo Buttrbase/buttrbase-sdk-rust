@@ -451,12 +451,6 @@ pub struct EntitlementCheckRequest<'a> {
     pub org_uuid: Option<&'a str>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct EntitlementCheckResponse {
-    pub allowed: bool,
-    pub reason: Option<String>,
-}
-
 // ── Coupons / Gift Cards ─────────────────────────────────────────────────────
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
