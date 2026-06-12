@@ -171,10 +171,42 @@ impl ButtrBaseClient {
 
     // ── OTP / magic-link auth ─────────────────────────────────────────────
 
-    /// Send a one-time-password email to `email`. Your app is identified
-    /// by `app_id` (integer PK visible in the ButtrBase dashboard) and
-    /// `app_name`.
-    pub async fn send_otp(
+    /// Send a one-time-password email to `email`.
+    ///
+    /// The returned `TokenPair::token` is the `signup_token` to pass to
+    /// `finalize_registration` after the user enters the code.
+    pub async fn send_otp(&self, email: &str, app_uuid: Uuid) -> Result<(), Error> {
+        let body = serde_json::json!({ "email": email, "app_uuid": app_uuid });
+        self.send_empty(
+            self.app_request(Method::POST, "/api/v1/auth/otp/send")
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Verify the OTP the user received. Returns a `TokenPair` whose
+    /// `token` field is the `signup_token` for `finalize_registration`.
+    pub async fn verify_otp(
+        &self,
+        email: &str,
+        otp: &str,
+        app_uuid: Uuid,
+    ) -> Result<TokenPair, Error> {
+        let body = serde_json::json!({ "email": email, "otp": otp, "app_uuid": app_uuid });
+        self.send(
+            self.app_request(Method::POST, "/api/v1/auth/otp/verify")
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Legacy `send_otp` — uses slug-based app identifiers which the
+    /// backend no longer accepts. Migrate to `send_otp(email, app_uuid)`.
+    #[deprecated(
+        since = "0.3.0",
+        note = "slug-based identifiers are no longer accepted; use send_otp(email, app_uuid)"
+    )]
+    pub async fn send_otp_legacy(
         &self,
         app_id: i32,
         app_name: &str,
@@ -196,8 +228,13 @@ impl ButtrBaseClient {
         .await
     }
 
-    /// Verify the OTP the user received and return a token pair.
-    pub async fn verify_otp(
+    /// Legacy `verify_otp` — uses slug-based app identifiers which the
+    /// backend no longer accepts. Migrate to `verify_otp(email, otp, app_uuid)`.
+    #[deprecated(
+        since = "0.3.0",
+        note = "slug-based identifiers are no longer accepted; use verify_otp(email, otp, app_uuid)"
+    )]
+    pub async fn verify_otp_legacy(
         &self,
         app_id: i32,
         app_name: &str,
@@ -218,6 +255,139 @@ impl ButtrBaseClient {
             self.app_request(Method::POST, "/api/app/auth/otp/verify")
                 .json(&body),
         )
+        .await
+    }
+
+    // ── Registration (0.3.0+) ─────────────────────────────────────────────
+
+    /// Check whether an org name is available before calling
+    /// `finalize_registration`. Returns the normalized form and the
+    /// reason if unavailable (`taken`, `too_short`, `invalid_chars`, …).
+    pub async fn check_org_name(&self, name: &str) -> Result<CheckOrgNameResponse, Error> {
+        let body = serde_json::json!({ "name": name });
+        self.send(
+            self.app_request(Method::POST, "/api/v1/auth/check-org-name")
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Complete user registration after OTP verification.
+    ///
+    /// `req.signup_token` must be the `token` field from `verify_otp`.
+    /// `req.org_choice` is either `OrgChoice::Create { name }` (new org)
+    /// or `OrgChoice::AcceptInvite { invitation_token }` (join via invite).
+    ///
+    /// Full flow: `send_otp` → `verify_otp` → `finalize_registration`.
+    pub async fn finalize_registration(
+        &self,
+        req: &FinalizeRegistrationRequest<'_>,
+    ) -> Result<TokenPair, Error> {
+        self.send(
+            self.app_request(Method::POST, "/api/v1/auth/finalize-registration")
+                .json(req),
+        )
+        .await
+    }
+
+    /// Legacy one-shot registration (deprecated). The backend still serves
+    /// this route for backward compatibility but the auto-create-by-domain
+    /// behavior collides on the second sign-up from any domain and makes
+    /// invitations impossible.
+    ///
+    /// Migrate to: `send_otp` → `verify_otp` → `finalize_registration`.
+    #[deprecated(
+        since = "0.3.0",
+        note = "use send_otp + verify_otp + finalize_registration instead"
+    )]
+    pub async fn register(&self, req: &RegisterRequest<'_>) -> Result<TokenPair, Error> {
+        self.send(
+            self.app_request(Method::POST, "/api/v1/auth/register")
+                .json(req),
+        )
+        .await
+    }
+
+    // ── Org invitations (0.3.0+) ─────────────────────────────────────────
+
+    /// Create an org invitation. The plaintext `token` in the response is
+    /// shown once — the backend stores only its SHA-256 hash and cannot
+    /// re-surface it. Capture it immediately or share via `signup_url`.
+    pub async fn create_invitation(
+        &self,
+        org_uuid: Uuid,
+        req: &CreateInvitationRequest<'_>,
+    ) -> Result<CreateInvitationResponse, Error> {
+        self.send(
+            self.app_request(
+                Method::POST,
+                &format!("/api/v1/organizations/{}/invitations", org_uuid),
+            )
+            .json(req),
+        )
+        .await
+    }
+
+    /// Preview an invitation by its token (public — no auth required).
+    /// Used to show "you've been invited to join Acme Inc" before signup.
+    pub async fn preview_invitation(&self, token: &str) -> Result<InvitationPreview, Error> {
+        self.send(
+            self.http
+                .request(
+                    Method::GET,
+                    format!("{}/api/v1/invitations/{}/preview", self.base_url, token),
+                ),
+        )
+        .await
+    }
+
+    /// Accept an invitation for an already-authenticated user joining an
+    /// additional org. Brand-new users should use
+    /// `finalize_registration` with `OrgChoice::AcceptInvite` instead.
+    pub async fn accept_invitation(
+        &self,
+        bearer: &str,
+        token: &str,
+    ) -> Result<AcceptInvitationResponse, Error> {
+        self.send(
+            self.user_request(
+                Method::POST,
+                &format!("/api/v1/invitations/{}/accept", token),
+                bearer,
+            ),
+        )
+        .await
+    }
+
+    /// List all invitations for an org (pending, accepted, and revoked).
+    pub async fn list_invitations(
+        &self,
+        bearer: &str,
+        org_uuid: Uuid,
+    ) -> Result<Vec<InvitationListItem>, Error> {
+        self.send(self.user_request(
+            Method::GET,
+            &format!("/api/v1/organizations/{}/invitations", org_uuid),
+            bearer,
+        ))
+        .await
+    }
+
+    /// Revoke a pending invitation by its integer ID.
+    pub async fn revoke_invitation(
+        &self,
+        bearer: &str,
+        org_uuid: Uuid,
+        invitation_id: i32,
+    ) -> Result<(), Error> {
+        self.send_empty(self.user_request(
+            Method::DELETE,
+            &format!(
+                "/api/v1/organizations/{}/invitations/{}",
+                org_uuid, invitation_id
+            ),
+            bearer,
+        ))
         .await
     }
 
@@ -973,7 +1143,7 @@ fn parse_error_body(status: StatusCode, body: &str) -> Error {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
-    use httpmock::Method::PATCH;
+    use httpmock::Method::{DELETE, PATCH};
     use serde_json::json;
 
     fn make_client(server: &MockServer) -> ButtrBaseClient {
@@ -1088,29 +1258,29 @@ mod tests {
         assert!(s.contains("serialisation error"));
     }
 
-    // ── send_otp ───────────────────────────────────────────────────────────
+    // ── send_otp (0.3.0) ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_send_otp_success() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST).path("/api/app/auth/otp/send");
+            when.method(POST).path("/api/v1/auth/otp/send");
             then.status(200).body("{}");
         });
         let client = make_client(&server);
-        client.send_otp(1, "myapp", "u@e.com", "org-uuid", "myorg").await.unwrap();
+        client.send_otp("u@e.com", uuid::Uuid::nil()).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_send_otp_api_error() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST).path("/api/app/auth/otp/send");
+            when.method(POST).path("/api/v1/auth/otp/send");
             then.status(400)
                 .json_body(json!({"error": {"message": "Invalid email", "code": "BAD_EMAIL"}}));
         });
         let client = make_client(&server);
-        let result = client.send_otp(1, "myapp", "bad", "org", "org").await;
+        let result = client.send_otp("bad", uuid::Uuid::nil()).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Api { status, message, code } => {
@@ -1122,10 +1292,41 @@ mod tests {
         }
     }
 
-    // ── verify_otp ─────────────────────────────────────────────────────────
+    // ── verify_otp (0.3.0) ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_verify_otp_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/otp/verify");
+            then.status(200).json_body(json!({
+                "token": "signup_token_jwt",
+                "refresh_token": null,
+                "user_uuid": null
+            }));
+        });
+        let client = make_client(&server);
+        let pair = client.verify_otp("u@e.com", "123456", uuid::Uuid::nil()).await.unwrap();
+        assert_eq!(pair.token, "signup_token_jwt");
+    }
+
+    // ── send_otp_legacy / verify_otp_legacy ────────────────────────────────
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_send_otp_legacy_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/app/auth/otp/send");
+            then.status(200).body("{}");
+        });
+        let client = make_client(&server);
+        client.send_otp_legacy(1, "myapp", "u@e.com", "org-uuid", "myorg").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_verify_otp_legacy_success() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/api/app/auth/otp/verify");
@@ -1136,9 +1337,228 @@ mod tests {
             }));
         });
         let client = make_client(&server);
-        let pair = client.verify_otp(1, "myapp", "u@e.com", "123456", "o-uuid", "myorg").await.unwrap();
+        let pair = client.verify_otp_legacy(1, "myapp", "u@e.com", "123456", "o-uuid", "myorg").await.unwrap();
         assert_eq!(pair.token, "access_jwt");
         assert_eq!(pair.refresh_token, Some("refresh_jwt".to_string()));
+    }
+
+    // ── check_org_name ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_check_org_name_available() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/check-org-name");
+            then.status(200).json_body(json!({
+                "available": true,
+                "reason": null,
+                "normalized": "acme-inc"
+            }));
+        });
+        let client = make_client(&server);
+        let resp = client.check_org_name("Acme Inc").await.unwrap();
+        assert!(resp.available);
+        assert_eq!(resp.normalized, "acme-inc");
+        assert!(resp.reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_org_name_taken() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/check-org-name");
+            then.status(200).json_body(json!({
+                "available": false,
+                "reason": "taken",
+                "normalized": "acme"
+            }));
+        });
+        let client = make_client(&server);
+        let resp = client.check_org_name("acme").await.unwrap();
+        assert!(!resp.available);
+        assert_eq!(resp.reason, Some("taken".to_string()));
+    }
+
+    // ── finalize_registration ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_finalize_registration_create_org() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/finalize-registration");
+            then.status(200).json_body(json!({
+                "token": "access_jwt",
+                "refresh_token": "refresh_jwt",
+                "user_uuid": "00000000-0000-0000-0000-000000000001"
+            }));
+        });
+        let client = make_client(&server);
+        let req = crate::models::FinalizeRegistrationRequest {
+            email: "alice@example.com",
+            password: "s3cur3!",
+            app_uuid: uuid::Uuid::nil(),
+            signup_token: "signup_tok",
+            org_choice: crate::models::OrgChoice::Create { name: "Acme Inc" },
+            first_name: Some("Alice"),
+            last_name: None,
+        };
+        let pair = client.finalize_registration(&req).await.unwrap();
+        assert_eq!(pair.token, "access_jwt");
+    }
+
+    #[tokio::test]
+    async fn test_finalize_registration_accept_invite() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/finalize-registration");
+            then.status(200).json_body(json!({
+                "token": "access_jwt",
+                "refresh_token": null,
+                "user_uuid": null
+            }));
+        });
+        let client = make_client(&server);
+        let req = crate::models::FinalizeRegistrationRequest {
+            email: "bob@example.com",
+            password: "s3cur3!",
+            app_uuid: uuid::Uuid::nil(),
+            signup_token: "signup_tok",
+            org_choice: crate::models::OrgChoice::AcceptInvite { invitation_token: "Bd9abc" },
+            first_name: None,
+            last_name: None,
+        };
+        let pair = client.finalize_registration(&req).await.unwrap();
+        assert_eq!(pair.token, "access_jwt");
+    }
+
+    // ── register (deprecated) ─────────────────────────────────────────────
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_register_legacy() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/register");
+            then.status(200).json_body(json!({
+                "token": "access_jwt",
+                "refresh_token": "refresh_jwt",
+                "user_uuid": "00000000-0000-0000-0000-000000000001"
+            }));
+        });
+        let client = make_client(&server);
+        let req = crate::models::RegisterRequest {
+            email: "alice@example.com",
+            password: "s3cur3!",
+            org_name: "acme.com",
+            app_uuid: uuid::Uuid::nil(),
+            first_name: Some("Alice"),
+            last_name: None,
+        };
+        let pair = client.register(&req).await.unwrap();
+        assert_eq!(pair.token, "access_jwt");
+    }
+
+    // ── invitations ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_invitation() {
+        let server = MockServer::start();
+        let org_uuid = uuid::Uuid::nil();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path(format!("/api/v1/organizations/{}/invitations", org_uuid));
+            then.status(200).json_body(json!({
+                "id": 1,
+                "org_uuid": org_uuid,
+                "email": "bob@example.com",
+                "role": "member",
+                "expires_at": "2026-07-01T00:00:00Z",
+                "token": "Bd9plaintext",
+                "signup_url": "https://app.example.com/signup?invite=Bd9plaintext"
+            }));
+        });
+        let client = make_client(&server);
+        let req = crate::models::CreateInvitationRequest {
+            email: Some("bob@example.com"),
+            role: Some("member"),
+            expires_in_hours: Some(48),
+        };
+        let resp = client.create_invitation(org_uuid, &req).await.unwrap();
+        assert_eq!(resp.token, "Bd9plaintext");
+        assert_eq!(resp.role, "member");
+    }
+
+    #[tokio::test]
+    async fn test_preview_invitation() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/v1/invitations/Bd9abc/preview");
+            then.status(200).json_body(json!({
+                "org_uuid": "00000000-0000-0000-0000-000000000001",
+                "org_name": "Acme Inc",
+                "email": "bob@example.com",
+                "role": "member",
+                "expires_at": "2026-07-01T00:00:00Z",
+                "valid": true,
+                "invalid_reason": null
+            }));
+        });
+        let client = make_client(&server);
+        let preview = client.preview_invitation("Bd9abc").await.unwrap();
+        assert!(preview.valid);
+        assert_eq!(preview.org_name, "Acme Inc");
+    }
+
+    #[tokio::test]
+    async fn test_accept_invitation() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/invitations/Bd9abc/accept");
+            then.status(200).json_body(json!({
+                "org_uuid": "00000000-0000-0000-0000-000000000001",
+                "org_name": "Acme Inc",
+                "role": "member"
+            }));
+        });
+        let client = make_client(&server);
+        let resp = client.accept_invitation("user_tok", "Bd9abc").await.unwrap();
+        assert_eq!(resp.org_name, "Acme Inc");
+        assert_eq!(resp.role, "member");
+    }
+
+    #[tokio::test]
+    async fn test_list_invitations() {
+        let server = MockServer::start();
+        let org_uuid = uuid::Uuid::nil();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/api/v1/organizations/{}/invitations", org_uuid));
+            then.status(200).json_body(json!([{
+                "id": 1,
+                "email": "bob@example.com",
+                "role": "member",
+                "expires_at": "2026-07-01T00:00:00Z",
+                "accepted_at": null,
+                "revoked_at": null
+            }]));
+        });
+        let client = make_client(&server);
+        let list = client.list_invitations("tok", org_uuid).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].role, "member");
+    }
+
+    #[tokio::test]
+    async fn test_revoke_invitation() {
+        let server = MockServer::start();
+        let org_uuid = uuid::Uuid::nil();
+        server.mock(|when, then| {
+            when.method(DELETE)
+                .path(format!("/api/v1/organizations/{}/invitations/42", org_uuid));
+            then.status(204).body("");
+        });
+        let client = make_client(&server);
+        client.revoke_invitation("tok", org_uuid, 42).await.unwrap();
     }
 
     // ── refresh_token ──────────────────────────────────────────────────────
