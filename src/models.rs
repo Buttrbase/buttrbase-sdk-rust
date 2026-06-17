@@ -230,14 +230,20 @@ pub struct OrgEntry {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Invoice {
     pub id: i32,
+    #[serde(default)]
     pub user_id: i32,
     pub subscription_id: Option<i32>,
+    #[serde(default)]
     pub provider: String,
+    #[serde(default)]
     pub provider_invoice_id: String,
     pub amount: i32,
+    #[serde(default)]
     pub status: String,
     pub invoice_pdf_url: Option<String>,
+    #[serde(default)]
     pub created_at: String,
+    #[serde(default)]
     pub updated_at: String,
 }
 
@@ -1071,6 +1077,30 @@ pub struct UpdateAppRpConfigRequest {
     pub rp_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rp_origins: Option<Vec<String>>,
+}
+
+// ── Backwards compatibility / Legacy structures ──────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct User {
+    pub id: i32,
+    pub user_uuid: String,
+    pub email: String,
+    pub org_uuid: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LoginResponse {
+    pub access_token: Option<String>,
+    pub user: User,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EntitlementCheckResponseLegacy {
+    #[serde(alias = "allowed", alias = "granted")]
+    pub allowed: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[cfg(test)]

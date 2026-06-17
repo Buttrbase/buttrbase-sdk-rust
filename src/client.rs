@@ -951,6 +951,164 @@ impl ButtrBaseClient {
         )
         .await
     }
+
+    // ── Backwards compatibility & missing integration methods ────────────────
+
+    /// Send a magic-link email with custom options (backward compatibility).
+    pub async fn magic_link_send(
+        &self,
+        email: &str,
+        _redirect_to: Option<&str>,
+        _app_uuid: Uuid,
+    ) -> Result<(), Error> {
+        self.send_magic_link(email, "default", "upskill").await
+    }
+
+    /// Exchange a magic-link token for a token pair (backward compatibility).
+    pub async fn magic_link_verify(&self, token: &str) -> Result<LoginResponse, Error> {
+        let body = serde_json::json!({ "token": token });
+        let raw_resp: serde_json::Value = self
+            .send(
+                self.app_request(Method::POST, "/api/auth/magic-link/verify")
+                    .json(&body),
+            )
+            .await?;
+
+        // 1. Try to extract from the raw response body (old API style)
+        if let Some(user_obj) = raw_resp.get("user") {
+            if let Ok(user) = serde_json::from_value::<User>(user_obj.clone()) {
+                let access_token = raw_resp
+                    .get("access_token")
+                    .or_else(|| raw_resp.get("token"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                return Ok(LoginResponse {
+                    access_token,
+                    user,
+                });
+            }
+        }
+
+        // 2. Fall back to parsing the JWT token from TokenPair (new API style)
+        if let Ok(pair) = serde_json::from_value::<TokenPair>(raw_resp.clone()) {
+            if let Ok(claims) = self.verify_token(&pair.token).await {
+                return Ok(LoginResponse {
+                    access_token: Some(pair.token),
+                    user: User {
+                        id: 0,
+                        user_uuid: claims.sub.to_string(),
+                        email: "".to_string(),
+                        org_uuid: claims.org.to_string(),
+                    },
+                });
+            }
+        }
+
+        Err(Error::Unexpected {
+            status: 400,
+            body: "failed to verify magic link and parse response".to_string(),
+        })
+    }
+
+    /// Begin OIDC authorize flow (backward compatibility).
+    pub async fn oidc_authorize_url(
+        &self,
+        connection_uuid: &str,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(
+            Method::GET,
+            &format!("/api/auth/oidc/{}/authorize", connection_uuid),
+        ))
+        .await
+    }
+
+    /// OIDC Callback (backward compatibility).
+    pub async fn oidc_callback(
+        &self,
+        params: &std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, Error> {
+        let qs: String = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.send(self.app_request(
+            Method::GET,
+            &format!("/api/auth/oidc/callback?{}", qs),
+        ))
+        .await
+    }
+
+    /// Begin SAML authorize flow (backward compatibility).
+    pub async fn saml_authorize_url(
+        &self,
+        connection_uuid: &str,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(
+            Method::GET,
+            &format!("/api/auth/saml/{}/authorize", connection_uuid),
+        ))
+        .await
+    }
+
+    /// SAML Callback (backward compatibility).
+    pub async fn saml_callback(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(self.app_request(
+            Method::POST,
+            "/api/auth/saml/callback"
+        ).json(payload))
+        .await
+    }
+
+    /// List all invoices (backward compatibility).
+    pub async fn list_invoices(&self) -> Result<Vec<Invoice>, Error> {
+        let resp: DataWrapper<Vec<Invoice>> = self
+            .send(self.app_request(Method::GET, "/api/billing/invoices"))
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// Get teams in an organization (admin / backward compatibility).
+    pub async fn get_org_teams(
+        &self,
+        org_uuid: &str,
+    ) -> Result<Vec<TeamItem>, Error> {
+        let resp: DataWrapper<Vec<TeamItem>> = self
+            .send(self.app_request(
+                Method::GET,
+                &format!("/api/v2/organizations/{}/teams", org_uuid),
+            ))
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// List members of a team (admin / backward compatibility).
+    pub async fn list_team_members(
+        &self,
+        team_uuid: &str,
+    ) -> Result<Vec<serde_json::Value>, Error> {
+        let resp: DataWrapper<Vec<serde_json::Value>> = self
+            .send(self.app_request(
+                Method::GET,
+                &format!("/api/teams/{}/members", team_uuid),
+            ))
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// Check entitlements for an organization (admin / backward compatibility).
+    pub async fn entitlements_check(
+        &self,
+        data: &EntitlementCheckRequest<'_>,
+    ) -> Result<EntitlementCheckResponseLegacy, Error> {
+        let resp: DataWrapper<EntitlementCheckResponseLegacy> = self
+            .send(self.app_request(Method::POST, "/api/entitlements/check").json(data))
+            .await?;
+        Ok(resp.data)
+    }
 }
 
 // ── Response parsing helpers ──────────────────────────────────────────────
