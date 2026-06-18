@@ -19,8 +19,7 @@
 > `verify_otp`, `magic_link_send`, and `register` now take `app_uuid: Uuid`
 > in place of the old `app: &str` slug. Slug-based app identifiers are no
 > longer accepted by the backend. See `CHANGELOG.md` for the full list of
-> additions (API-key exchange, OAuth start helper, app-level key & OAuth
-> config admin, audit log).
+> additions (OAuth start helper, OAuth config admin, audit log).
 
 > **0.2.0 dependency bump — `jsonwebtoken` 9 → 10.** Transitive change; SDK
 > public API unchanged. The SDK pins `jsonwebtoken = { version = "10",
@@ -1010,28 +1009,6 @@ client.rotate_signing_keys("org-uuid").await?;
 let audit = client.list_signing_audit("org-uuid").await?;
 ```
 
-### API Key Exchange (initial + refresh rotation)
-
-Long-lived API keys (`wb_live_…` / `wb_test_…`) shouldn't sit in memory of
-running services — exchange them for a short-lived JWT pair at startup and
-rotate the refresh token on a timer.
-
-```rust
-use buttrbase_sdk::client::ButtrBaseClient;
-
-let client = ButtrBaseClient::new("https://api.buttrbase.com".into());
-
-// 1. Bootstrap: exchange the raw API key once, then discard it.
-let initial = client.exchange_api_key("wb_live_…").await?;
-let access  = initial.access_token;
-let refresh = initial.refresh_token;
-println!("access expires at {}", initial.access_expires_at);
-
-// 2. Before `access` expires, rotate the refresh token for a fresh pair.
-let rotated = client.exchange_refresh_token(&refresh).await?;
-// `rotated.refresh_token` is the new one; the old refresh is now revoked.
-```
-
 ### OAuth Start URL
 
 `oauth_start_url` builds the URL the user-agent should be sent to; it does
@@ -1051,39 +1028,6 @@ let url = client.oauth_start_url(
 );
 // e.g. https://api.buttrbase.com/api/v1/auth/oauth/google/start?app_uuid=…&return_to=…
 // Redirect the browser to this URL.
-```
-
-### App-level API Key Creation
-
-`raw_key` in the response is returned **once** — the backend stores only a
-hash. If you don't capture it now, the key cannot be recovered.
-
-```rust
-use buttrbase_sdk::models::{CreateApiKeyRequest, ExpiryInput, KeyType};
-use uuid::Uuid;
-
-let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
-
-let created = client.create_app_api_key(
-    app_uuid,
-    &CreateApiKeyRequest {
-        name: "CI ingestion key".into(),
-        env: "live".into(),
-        key_type: KeyType::Expiring(ExpiryInput::InDays(90)),
-    },
-).await?;
-
-// Store `created.raw_key` somewhere secure. It will never be shown again.
-println!("{}", created.raw_key);
-
-// Listing only ever returns metadata + prefix — never the secret.
-let keys = client.list_app_api_keys(app_uuid).await?;
-
-// Rotate produces a replacement key (revoking the old) with the same settings.
-let rotated = client.rotate_app_api_key(app_uuid, created.key_uuid).await?;
-
-// Or revoke outright.
-client.revoke_app_api_key(app_uuid, rotated.key_uuid).await?;
 ```
 
 ### OAuth Provider Config
@@ -1126,8 +1070,8 @@ client.delete_oauth_config(app_uuid, "google").await?;
 
 ### Audit Log
 
-Per-app, read-only stream of security events (`api_key.*`, `oauth_config.*`,
-…), newest first.
+Per-app, read-only stream of security events (`oauth_config.*`,
+`credentials.*`, …), newest first.
 
 ```rust
 use buttrbase_sdk::models::AuditLogQuery;
@@ -1139,7 +1083,7 @@ let rows = client.read_audit_log(
     app_uuid,
     AuditLogQuery {
         limit: Some(50),
-        action_prefix: Some("api_key.".into()),
+        action_prefix: Some("oauth_config.".into()),
     },
 ).await?;
 

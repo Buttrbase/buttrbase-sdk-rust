@@ -784,20 +784,6 @@ pub struct GeoResponse {
     pub timezone: String,
 }
 
-// ── API key exchange (POST /api/v1/auth/api-key/exchange) ────────────────────
-
-/// Response from `POST /api/v1/auth/api-key/exchange`.
-///
-/// `token_type` is always `"Bearer"`.
-#[derive(Deserialize, Debug, Clone)]
-pub struct ExchangeResponse {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub token_type: String,
-    pub access_expires_at: DateTime<Utc>,
-    pub refresh_expires_at: DateTime<Utc>,
-}
-
 // ── OAuth start URL helper ──────────────────────────────────────────────────
 
 /// OAuth provider supported by `/api/v1/auth/oauth/{provider}/start`.
@@ -819,87 +805,6 @@ impl OAuthProvider {
             Self::Github => "github",
             Self::Apple => "apple",
         }
-    }
-}
-
-// ── App-level API keys (admin) ──────────────────────────────────────────────
-
-/// One entry from `GET /api/v1/apps/{app_uuid}/api-keys`.
-#[derive(Deserialize, Debug, Clone)]
-pub struct ApiKeySummary {
-    pub key_uuid: Uuid,
-    pub app_uuid: Uuid,
-    pub key_prefix: String,
-    pub name: String,
-    /// One of `"short_lived"`, `"permanent"`, or `"expiring"`.
-    pub key_type: String,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub last_used_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-}
-
-/// "Shown once" response from create / rotate. `raw_key` is the only place the
-/// plaintext key is ever returned — store it immediately or it cannot be
-/// recovered.
-#[derive(Deserialize, Debug, Clone)]
-pub struct CreatedKeyResponse {
-    pub key_uuid: Uuid,
-    pub raw_key: String,
-    pub key_prefix: String,
-    pub key_type: String,
-    pub expires_at: Option<DateTime<Utc>>,
-}
-
-/// Key lifetime / rotation policy. Maps to backend `KeyType` discriminator
-/// strings (`short_lived`, `permanent`, `expiring`).
-#[derive(Debug, Clone)]
-pub enum KeyType {
-    ShortLived,
-    Permanent,
-    Expiring(ExpiryInput),
-}
-
-/// When an `Expiring` key should expire. Wire format:
-/// `{"absolute": "<rfc3339>"}` or `{"in_days": 30}`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpiryInput {
-    Absolute(DateTime<Utc>),
-    InDays(i64),
-}
-
-/// Body of `POST /api/v1/apps/{app_uuid}/api-keys`.
-#[derive(Debug, Clone)]
-pub struct CreateApiKeyRequest {
-    pub name: String,
-    /// `"live"` or `"test"` — selects the key prefix.
-    pub env: String,
-    pub key_type: KeyType,
-}
-
-impl Serialize for CreateApiKeyRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("name", &self.name)?;
-        map.serialize_entry("env", &self.env)?;
-        match &self.key_type {
-            KeyType::ShortLived => {
-                map.serialize_entry("key_type", "short_lived")?;
-            }
-            KeyType::Permanent => {
-                map.serialize_entry("key_type", "permanent")?;
-            }
-            KeyType::Expiring(expiry) => {
-                map.serialize_entry("key_type", "expiring")?;
-                map.serialize_entry("expiry", expiry)?;
-            }
-        }
-        map.end()
     }
 }
 
@@ -978,7 +883,7 @@ pub struct AuditLogQuery {
     /// Page size. Backend default is 200, capped at 1000.
     pub limit: Option<u64>,
     /// Returns only events whose `action` starts with this string. Examples:
-    /// `"api_key."`, `"oauth_config."`, `"api_key.revoked"`.
+    /// `"oauth_config."`, `"credentials."`, `"oauth_config.updated"`.
     pub action_prefix: Option<String>,
 }
 
