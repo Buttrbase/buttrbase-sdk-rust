@@ -40,6 +40,17 @@ impl std::fmt::Display for Environment {
 
 // ── Auth / tokens ─────────────────────────────────────────────────────────
 
+/// Response from `POST /api/v1/auth/token` (OAuth2 client-credentials grant).
+///
+/// `token_type` is always `"Bearer"`. Use `access_token` in an
+/// `Authorization: Bearer <access_token>` header for subsequent requests.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppTokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: i64,
+}
+
 /// Access + refresh token pair returned after OTP verification.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenPair {

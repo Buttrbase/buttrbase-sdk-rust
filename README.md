@@ -92,6 +92,24 @@ let mut client = ButtrBaseClient::new("https://api.buttrbase.com".into());
 
 ## Authentication
 
+### App Token (On-Prem / Client Credentials)
+
+For self-hosted ButtrBase deployments or backend service-to-service calls, you
+can exchange your `client_id` and `client_secret` directly for a short-lived
+Bearer token using the OAuth2 client-credentials grant:
+
+```rust
+let bb = ButtrBaseClient::new(&client_id, &client_secret);
+
+let token = bb.get_app_token(&client_id, &client_secret).await?;
+// Use token.access_token as a Bearer token for subsequent requests
+println!("Bearer {}", token.access_token);
+println!("Expires in {} seconds", token.expires_in);
+```
+
+The credentials are sent in the JSON body (`grant_type`, `client_id`,
+`client_secret`) — no `Authorization` header is added to this request.
+
 ### Registration
 
 ```rust

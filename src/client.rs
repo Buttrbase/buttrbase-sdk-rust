@@ -432,6 +432,37 @@ impl ButtrBaseClient {
         .await
     }
 
+    // ── OAuth2 client-credentials token exchange ──────────────────────────
+
+    /// Exchange client credentials for a short-lived Bearer token.
+    ///
+    /// This calls `POST /api/v1/auth/token` with the OAuth2 client-credentials
+    /// grant and returns the raw token response. The returned `access_token`
+    /// is a JWT Bearer that can be used in the `Authorization` header.
+    ///
+    /// Use this when you need to authenticate against a self-hosted Buttrbase
+    /// instance where the token endpoint is the primary auth method.
+    pub async fn get_app_token(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<AppTokenResponse, Error> {
+        let body = serde_json::json!({
+            "grant_type":    "client_credentials",
+            "client_id":     client_id,
+            "client_secret": client_secret,
+        });
+        self.send(
+            self.http
+                .request(
+                    Method::POST,
+                    format!("{}/api/v1/auth/token", self.base_url),
+                )
+                .json(&body),
+        )
+        .await
+    }
+
     // ── Entitlements ──────────────────────────────────────────────────────
 
     /// Check whether the user holding `bearer` has access to `feature_key`.
@@ -1605,6 +1636,78 @@ mod tests {
         let client = make_client(&server);
         let pair = client.verify_magic_link("magic_code").await.unwrap();
         assert_eq!(pair.token, "ml_jwt");
+    }
+
+    // ── get_app_token ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_app_token_success() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/token");
+            then.status(200).json_body(json!({
+                "access_token": "eyJhbGciOiJSUzI1NiJ9.test",
+                "token_type":   "Bearer",
+                "expires_in":   3600
+            }));
+        });
+        let client = make_client(&server);
+        let resp = client
+            .get_app_token("bb_test_cid_test", "bb_test_sk_test")
+            .await
+            .unwrap();
+        assert_eq!(resp.access_token, "eyJhbGciOiJSUzI1NiJ9.test");
+        assert_eq!(resp.token_type, "Bearer");
+        assert_eq!(resp.expires_in, 3600);
+    }
+
+    #[tokio::test]
+    async fn test_get_app_token_no_basic_auth() {
+        // The request must NOT carry an Authorization header — credentials go
+        // in the JSON body only.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/v1/auth/token")
+                .header_exists("authorization")
+                .matches(|_req| false); // never match — we assert the happy path below
+            then.status(401).body("should not be reached");
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/token");
+            then.status(200).json_body(json!({
+                "access_token": "tok",
+                "token_type":   "Bearer",
+                "expires_in":   1800
+            }));
+        });
+        let client = make_client(&server);
+        let resp = client
+            .get_app_token("any_cid", "any_sk")
+            .await
+            .unwrap();
+        assert_eq!(resp.access_token, "tok");
+    }
+
+    #[tokio::test]
+    async fn test_get_app_token_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/token");
+            then.status(401)
+                .json_body(json!({"error": {"message": "Invalid credentials", "code": "INVALID_CREDENTIALS"}}));
+        });
+        let client = make_client(&server);
+        let result = client.get_app_token("bad_cid", "bad_sk").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Api { status, message, code } => {
+                assert_eq!(status, 401);
+                assert_eq!(message, "Invalid credentials");
+                assert_eq!(code, Some("INVALID_CREDENTIALS".to_string()));
+            }
+            e => panic!("unexpected error variant: {:?}", e),
+        }
     }
 
     // ── check_entitlement ──────────────────────────────────────────────────

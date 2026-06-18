@@ -45,5 +45,5 @@ mod negotiator;
 // Convenience re-exports at the crate root.
 pub use client::ButtrBaseClient;
 pub use error::Error;
-pub use models::Environment;
+pub use models::{AppTokenResponse, Environment};
 pub use verify::{AuthContext, Claims, Verifier, VerifierConfig, VerifyError};
