@@ -95,7 +95,8 @@ impl ButtrBaseClient {
         let verifier = Verifier::new(VerifierConfig {
             jwks_url,
             issuer: base_url.clone(),
-            audience: "buttrbase".to_string(),
+            // buttrbase tokens carry no stable per-app `aud` — don't pin it.
+            audience: None,
         });
 
         Self {

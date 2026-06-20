@@ -854,7 +854,9 @@ use buttrbase_sdk::verify::{Verifier, VerifierConfig};
 let verifier = Verifier::new(VerifierConfig {
     jwks_url: "https://api.buttrbase.com/.well-known/jwks.json".into(),
     issuer: "https://api.buttrbase.com".into(),
-    audience: "my-app".into(),
+    // Optional — buttrbase tokens carry no stable per-app `aud`. Leave None to
+    // skip audience validation (identity comes from iss + signature + org claim).
+    audience: None,
 });
 
 // In an Axum handler:

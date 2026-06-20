@@ -10,13 +10,20 @@ use uuid::Uuid;
 use super::error::VerifyError;
 use super::jwks_cache::JwksCache;
 
-/// JWKS URL + issuer + audience. Public discovery URLs — nothing
+/// JWKS URL + issuer + optional audience. Public discovery URLs — nothing
 /// secret. Set at boot from env.
+///
+/// `audience` is **optional**. buttrbase access tokens do not carry a stable,
+/// per-application `aud` claim — magic-link tokens set `aud` to the org *name*
+/// (or omit it), and client-credential tokens omit it entirely. So most
+/// consumers should leave this `None` (no `aud` validation) and rely on the
+/// `iss` + signature + `org` claim. Set `Some(_)` only if you mint tokens with
+/// a known audience and want it enforced.
 #[derive(Debug, Clone)]
 pub struct VerifierConfig {
     pub jwks_url: String,
     pub issuer: String,
-    pub audience: String,
+    pub audience: Option<String>,
 }
 
 /// What's inside a buttrbase-issued JWT. The custom `org` claim is set
@@ -88,7 +95,12 @@ impl Verifier {
         };
 
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_audience(&[&self.config.audience]);
+        match &self.config.audience {
+            Some(aud) => validation.set_audience(&[aud]),
+            // No fixed audience to pin → don't reject on `aud`. Identity is
+            // established by the issuer + signature + the `org`/`sub` claims.
+            None => validation.validate_aud = false,
+        }
         validation.set_issuer(&[&self.config.issuer]);
 
         let data = decode::<Claims>(token, &key, &validation)
@@ -111,10 +123,10 @@ impl Verifier {
         Ok(claims.into())
     }
 
-    /// Read-only access to the configured audience — useful for diagnostics
-    /// endpoints.
-    pub fn audience(&self) -> &str {
-        &self.config.audience
+    /// Read-only access to the configured audience, if any — useful for
+    /// diagnostics endpoints. `None` means `aud` is not validated.
+    pub fn audience(&self) -> Option<&str> {
+        self.config.audience.as_deref()
     }
 
     /// Read-only access to the configured issuer.
@@ -176,10 +188,21 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
             issuer: "https://example.com".to_string(),
-            audience: "my-app".to_string(),
+            audience: Some("my-app".to_string()),
         };
         let v = Verifier::new(cfg);
-        assert_eq!(v.audience(), "my-app");
+        assert_eq!(v.audience(), Some("my-app"));
+    }
+
+    #[test]
+    fn test_verifier_audience_optional_none() {
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: None,
+        };
+        let v = Verifier::new(cfg);
+        assert_eq!(v.audience(), None);
     }
 
     #[test]
@@ -187,7 +210,7 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
             issuer: "https://issuer.example.com".to_string(),
-            audience: "aud".to_string(),
+            audience: Some("aud".to_string()),
         };
         let v = Verifier::new(cfg);
         assert_eq!(v.issuer(), "https://issuer.example.com");
@@ -198,7 +221,7 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
             issuer: "https://example.com".to_string(),
-            audience: "aud".to_string(),
+            audience: Some("aud".to_string()),
         };
         let v = Verifier::new(cfg);
         let headers = http::HeaderMap::new();
@@ -215,7 +238,7 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
             issuer: "https://example.com".to_string(),
-            audience: "aud".to_string(),
+            audience: Some("aud".to_string()),
         };
         let v = Verifier::new(cfg);
         let mut headers = http::HeaderMap::new();
@@ -229,7 +252,7 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
             issuer: "https://example.com".to_string(),
-            audience: "aud".to_string(),
+            audience: Some("aud".to_string()),
         };
         let v = Verifier::new(cfg);
         // Not a valid JWT
@@ -250,7 +273,7 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
             issuer: "https://example.com".to_string(),
-            audience: "aud".to_string(),
+            audience: Some("aud".to_string()),
         };
         let v = Verifier::new(cfg);
         let result = v.verify(token).await;
@@ -266,11 +289,11 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
             issuer: "https://example.com".to_string(),
-            audience: "aud".to_string(),
+            audience: Some("aud".to_string()),
         };
         let v = Verifier::new(cfg);
         let v2 = v.clone();
-        assert_eq!(v2.audience(), "aud");
+        assert_eq!(v2.audience(), Some("aud"));
     }
 
     #[test]
@@ -278,7 +301,7 @@ mod tests {
         let cfg = VerifierConfig {
             jwks_url: "url".to_string(),
             issuer: "iss".to_string(),
-            audience: "aud".to_string(),
+            audience: Some("aud".to_string()),
         };
         let s = format!("{:?}", cfg);
         assert!(s.contains("aud"));
