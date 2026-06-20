@@ -28,7 +28,11 @@ urlencoding = "2.1"
 
 # Verify side
 http = "1.3"
-jsonwebtoken = { version = "10.4.0", features = ["aws_lc_rs"] }
+# Pure-Rust crypto backend (RustCrypto) — avoids the aws-lc-rs C library and
+# its cmake/compiler build deps. RS256 verification uses the `rsa` crate.
+# reqwest's `rustls-tls` already pins the ring provider, so the whole crate
+# builds with no C toolchain beyond what ring needs.
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["rust_crypto"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
