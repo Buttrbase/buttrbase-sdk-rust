@@ -56,6 +56,20 @@ pub struct AccessToken {
     pub refresh_token: Option<String>,
 }
 
+/// Result of requesting a magic-link sign-in email.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MagicLinkSent {
+    /// Whether the email was queued for delivery.
+    pub sent: bool,
+    /// In non-production (when the server enables dev echo), the raw one-time
+    /// token is returned here so you can complete sign-in without email. Always
+    /// `None` in production.
+    #[serde(default)]
+    pub dev_token: Option<String>,
+    /// Seconds until the magic link expires.
+    pub expires_in_seconds: i64,
+}
+
 // ── Entitlements ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]

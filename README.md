@@ -146,20 +146,33 @@ client.otp_send("+15551234567").await?;
 let login = client.otp_verify_code("+15551234567", "123456").await?;
 ```
 
-### Magic Link
+### Magic Link (passwordless email sign-in)
+
+Magic-link is the flow that yields a **JWKS-verifiable RS256** access token —
+use it for federated / third-party apps. (The generic OTP endpoints issue HS256
+tokens signed with Buttrbase's secret, which the public JWKS can't verify.)
 
 ```rust
 use uuid::Uuid;
 let app_uuid = Uuid::parse_str("018f1234-5678-7000-8000-000000000001").unwrap();
 
-client.magic_link_send(
-    "user@example.com",
-    Some("https://app.example.com/callback"),
-    app_uuid,
-).await?;
-let login = client.magic_link_verify("token-from-email").await?;
-println!("{}", login.access_token); // JWT with sub, org, scope claims (aud is org-scoped, not pinned)
+// 1. Email the user a sign-in link. Pass your app_uuid + an allowlisted
+//    redirect_to so the link returns to YOUR callback (your app verifies).
+let sent = client
+    .send_magic_link("user@example.com", app_uuid, Some("https://app.example.com/login/magic"))
+    .await?;
+// sent.dev_token is Some(..) only in non-prod (server dev-echo); None in prod.
+
+// 2. On your callback page, exchange the link's `?token=` for a token pair.
+let tokens = client.verify_magic_link("token-from-url").await?;
+println!("{}", tokens.token); // RS256 JWT: sub, org, scope (aud not pinned)
 ```
+
+**Cross-app federation:** for the email link to return to *your* app, register
+your app's origin(s) on the Buttrbase application (its WebAuthn `rp_origins` or
+configured redirect URL) and pass a matching `redirect_to`. Non-allowlisted
+targets fall back to the Buttrbase-hosted sign-in page. Pass `redirect_to: None`
+for the first-party (Buttrbase-hosted) flow.
 
 ### Passkey support (WebAuthn)
 

@@ -402,20 +402,32 @@ impl ButtrBaseClient {
         .await
     }
 
-    /// Send a magic-link email. The user clicks the link; your callback
-    /// receives a short-lived code which you exchange with `verify_magic_link`.
+    /// Send a passwordless magic-link sign-in email.
+    ///
+    /// The user receives an email with a one-time link and clicks it; your app's
+    /// callback page then exchanges the link's `token` via [`verify_magic_link`].
+    ///
+    /// Cross-app federation: pass your `app_uuid` and a `redirect_to` URL whose
+    /// origin is registered on your Buttrbase application (its WebAuthn
+    /// `rp_origins` / configured redirect URL). When `redirect_to` is on that
+    /// allowlist, the email link points straight at *your* callback
+    /// (`{redirect_to}?token=...`) so your app verifies the token itself.
+    /// Otherwise the link falls back to the Buttrbase-hosted sign-in page.
+    /// Pass `redirect_to = None` for the first-party (Buttrbase-hosted) flow.
+    ///
+    /// [`verify_magic_link`]: Self::verify_magic_link
     pub async fn send_magic_link(
         &self,
         email: &str,
-        org_name: &str,
-        application: &str,
-    ) -> Result<(), Error> {
+        app_uuid: Uuid,
+        redirect_to: Option<&str>,
+    ) -> Result<MagicLinkSent, Error> {
         let body = serde_json::json!({
-            "email":       email,
-            "org_name":    org_name,
-            "application": application,
+            "email": email,
+            "app_uuid": app_uuid,
+            "redirect_to": redirect_to,
         });
-        self.send_empty(
+        self.send(
             self.app_request(Method::POST, "/api/auth/magic-link/send")
                 .json(&body),
         )
@@ -955,14 +967,16 @@ impl ButtrBaseClient {
 
     // ── Backwards compatibility & missing integration methods ────────────────
 
-    /// Send a magic-link email with custom options (backward compatibility).
+    /// Deprecated alias for [`send_magic_link`](Self::send_magic_link); kept for
+    /// source compatibility. Prefer `send_magic_link(email, app_uuid, redirect_to)`.
+    #[deprecated(note = "use send_magic_link(email, app_uuid, redirect_to)")]
     pub async fn magic_link_send(
         &self,
         email: &str,
-        _redirect_to: Option<&str>,
-        _app_uuid: Uuid,
-    ) -> Result<(), Error> {
-        self.send_magic_link(email, "default", "upskill").await
+        redirect_to: Option<&str>,
+        app_uuid: Uuid,
+    ) -> Result<MagicLinkSent, Error> {
+        self.send_magic_link(email, app_uuid, redirect_to).await
     }
 
     /// Exchange a magic-link token for a token pair (backward compatibility).

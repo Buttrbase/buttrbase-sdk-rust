@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0 — 2026-06-20 — magic-link contract fix
+
+### Changed (breaking)
+
+- **`send_magic_link(email, app_uuid, redirect_to)`** now sends the fields the
+  backend actually accepts (`email`, `app_uuid`, `redirect_to`) and returns
+  `MagicLinkSent { sent, dev_token, expires_in_seconds }`. The previous
+  signature sent `org_name`/`application` (ignored by the server) and omitted
+  `app_uuid`/`redirect_to`, so cross-app federation could never work.
+  - Pass an allowlisted `redirect_to` (origin registered on your app's
+    `rp_origins` / redirect URL) so the email link returns to your callback and
+    your app verifies the RS256 token. `None` ⇒ Buttrbase-hosted flow.
+- **`magic_link_send`** is now a `#[deprecated]` alias delegating to
+  `send_magic_link` with the corrected argument order.
+
+### Added
+
+- **`MagicLinkSent`** response model.
+
 ## 0.4.0 — 2026-06-20 — optional audience + pure-Rust crypto
 
 ### Changed (breaking)
