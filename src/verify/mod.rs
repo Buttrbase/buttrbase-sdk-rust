@@ -2,7 +2,7 @@
 //!
 //! Public surface:
 //!   - [`Verifier`]      — owns a JWKS cache + config, used in AppState
-//!   - [`VerifierConfig`] — JWKS URL + issuer + audience
+//!   - [`VerifierConfig`] — JWKS URL + issuer + optional audience
 //!   - [`Claims`]        — what's inside the token
 //!   - [`AuthContext`]   — what the handler typically wants
 //!   - [`VerifyError`]   — typed failure modes; map to your AppError

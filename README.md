@@ -158,7 +158,7 @@ client.magic_link_send(
     app_uuid,
 ).await?;
 let login = client.magic_link_verify("token-from-email").await?;
-println!("{}", login.access_token); // JWT with sub, org, aud claims
+println!("{}", login.access_token); // JWT with sub, org, scope claims (aud is org-scoped, not pinned)
 ```
 
 ### Passkey support (WebAuthn)

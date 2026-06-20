@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 — 2026-06-20 — optional audience + pure-Rust crypto
+
+### Changed (breaking)
+
+- **`VerifierConfig.audience` is now `Option<String>`** (was `String`). buttrbase
+  access tokens carry **no stable, per-application `aud` claim** — magic-link
+  tokens set `aud` to the org *name* (or omit it) and client-credential tokens
+  omit it entirely. Pinning a fixed audience therefore rejected legitimate
+  tokens. When `audience` is `None` the verifier sets
+  `validation.validate_aud = false`; identity then rests on the issuer + RS256
+  signature + the `org`/`sub` claims. **Most consumers should pass `None`.**
+  - Migration: `audience: "my-app".into()` → `audience: None` (or
+    `audience: Some("my-app".into())` to keep enforcing a known audience).
+- **`Verifier::audience()` now returns `Option<&str>`** (was `&str`).
+- The bundled `ButtrBaseClient` verifier no longer hardcodes
+  `audience: "buttrbase"` (which never matched a real token) — it uses `None`.
+
+### Changed (build)
+
+- JWT verification now uses `jsonwebtoken`'s **`rust_crypto`** (RustCrypto)
+  backend instead of `aws_lc_rs`. This removes the `aws-lc-rs` C library and its
+  `cmake`/C-toolchain build requirement; `reqwest`'s `rustls-tls` already pins
+  the `ring` provider. RS256 verification behavior is unchanged.
+
 ## 0.3.0 — 2026-06-03 — org-aware registration + invitations
 
 ### Added
