@@ -884,8 +884,27 @@ async fn protected(
 
 ### Claims & AuthContext
 
-- `Claims` — raw JWT payload: `sub` (user UUID), `org` (org UUID), `exp`, `iat`, `scope`
-- `AuthContext` — simplified: `user_id`, `org_id`, `scopes`
+- `Claims` — raw JWT payload: `sub` (user UUID), `org` (org UUID), `exp`, `iat`, `scope`, `data` (optional identity envelope)
+- `AuthContext` — simplified: `user_id`, `org_id`, `scopes`, `roles`, `email`
+
+### Reading roles & email
+
+Access tokens minted with the enrichment backend carry identity data under a `data` claim envelope. After verifying, `AuthContext` has `roles: Vec<String>` (split from the comma/space-delimited `data.roles` string) and `email: Option<String>`:
+
+```rust
+let auth = verifier.verify_bearer(&headers).await
+    .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+if auth.roles.iter().any(|r| r == "owner" || r == "org_admin") {
+    // grant elevated access
+}
+
+if let Some(email) = &auth.email {
+    // use the verified email
+}
+```
+
+Tokens without a `data` envelope (older or client-credential tokens) deserialize normally and produce an empty `roles` vec and `None` email — existing code keeps working unchanged.
 
 ### Error Handling
 

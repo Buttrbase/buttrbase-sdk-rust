@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 — 2026-06-25 — Claims data envelope (roles/email)
+
+`Claims` gains optional `data: ClaimsData` (roles, email, org_uuid, user_uuid); `AuthContext` gains `roles: Vec<String>` and `email`. Additive — existing `sub`/`org`/`scope` consumers unaffected. Requires backend access tokens minted with the top-level-claims enrichment.
+
 ## 0.5.0 — 2026-06-20 — magic-link contract fix
 
 ### Changed (breaking)
