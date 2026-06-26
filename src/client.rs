@@ -1637,10 +1637,11 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/api/auth/magic-link/send");
-            then.status(200).body("{}");
+            then.status(200).json_body(json!({"sent": true, "expires_in_seconds": 900}));
         });
         let client = make_client(&server);
-        client.send_magic_link("u@e.com", "myorg", "myapp").await.unwrap();
+        let result = client.send_magic_link("u@e.com", uuid::Uuid::nil(), Some("myapp")).await.unwrap();
+        assert!(result.sent);
     }
 
     #[tokio::test]

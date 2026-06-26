@@ -26,6 +26,20 @@ pub struct VerifierConfig {
     pub audience: Option<String>,
 }
 
+/// Identity enrichment carried under the buttrbase `data` claim envelope.
+/// Additive: tokens without `data` deserialize to `None`.
+#[derive(Clone, Debug, Deserialize, Default)]
+pub struct ClaimsData {
+    #[serde(default)]
+    pub roles: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub org_uuid: Option<Uuid>,
+    #[serde(default)]
+    pub user_uuid: Option<Uuid>,
+}
+
 /// What's inside a buttrbase-issued JWT. The custom `org` claim is set
 /// by `JwtIssuer::issue` on the buttrbase side.
 #[derive(Clone, Debug, Deserialize)]
@@ -36,6 +50,8 @@ pub struct Claims {
     pub iat: usize,
     #[serde(default)]
     pub scope: Vec<String>,
+    #[serde(default)]
+    pub data: Option<ClaimsData>,
 }
 
 /// What handlers usually want. Strips the JWT-y bits and exposes just
@@ -45,15 +61,22 @@ pub struct AuthContext {
     pub user_id: Uuid,
     pub org_id: Uuid,
     pub scopes: Vec<String>,
+    pub roles: Vec<String>,
+    pub email: Option<String>,
 }
 
 impl From<Claims> for AuthContext {
     fn from(c: Claims) -> Self {
-        Self {
-            user_id: c.sub,
-            org_id: c.org,
-            scopes: c.scope,
-        }
+        // buttrbase stores `data.roles` as a single comma/space-delimited
+        // string (e.g. "owner" or "org_admin,leadership"); split to a Vec.
+        let roles = c
+            .data
+            .as_ref()
+            .and_then(|d| d.roles.as_deref())
+            .map(|s| s.split([',', ' ']).filter(|p| !p.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
+        let email = c.data.as_ref().and_then(|d| d.email.clone());
+        Self { user_id: c.sub, org_id: c.org, scopes: c.scope, roles, email }
     }
 }
 
@@ -147,6 +170,7 @@ mod tests {
             exp: 0,
             iat: 0,
             scope: vec!["read:pages".into()],
+            data: None,
         };
         let auth: AuthContext = c.into();
         assert_eq!(auth.scopes, vec!["read:pages".to_string()]);
@@ -176,6 +200,7 @@ mod tests {
             exp: 1000,
             iat: 500,
             scope: vec!["admin".to_string()],
+            data: None,
         };
         let auth: AuthContext = c.into();
         assert_eq!(auth.user_id, uid);
@@ -305,5 +330,17 @@ mod tests {
         };
         let s = format!("{:?}", cfg);
         assert!(s.contains("aud"));
+    }
+
+    #[test]
+    fn claims_expose_roles_and_email_from_data_envelope() {
+        let json = include_str!("../../tests/fixtures/access_token_claims.json");
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        let data = claims.data.as_ref().expect("data envelope present");
+        assert_eq!(data.roles.as_deref(), Some("owner"));
+        assert_eq!(data.email.as_deref(), Some("test@example.com"));
+        let auth: AuthContext = claims.into();
+        assert!(auth.roles.contains(&"owner".to_string()));
+        assert_eq!(auth.email.as_deref(), Some("test@example.com"));
     }
 }
