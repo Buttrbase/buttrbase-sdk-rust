@@ -321,7 +321,7 @@ impl ButtrBaseClient {
         self.send(
             self.app_request(
                 Method::POST,
-                &format!("/api/v1/organizations/{}/invitations", org_uuid),
+                &format!("/api/organizations/{}/invitations", org_uuid),
             )
             .json(req),
         )
@@ -335,7 +335,7 @@ impl ButtrBaseClient {
             self.http
                 .request(
                     Method::GET,
-                    format!("{}/api/v1/invitations/{}/preview", self.base_url, token),
+                    format!("{}/api/auth/invitations/{}", self.base_url, token),
                 ),
         )
         .await
@@ -352,7 +352,7 @@ impl ButtrBaseClient {
         self.send(
             self.user_request(
                 Method::POST,
-                &format!("/api/v1/invitations/{}/accept", token),
+                &format!("/api/auth/invitations/{}/accept", token),
                 bearer,
             ),
         )
@@ -367,7 +367,7 @@ impl ButtrBaseClient {
     ) -> Result<Vec<InvitationListItem>, Error> {
         self.send(self.user_request(
             Method::GET,
-            &format!("/api/v1/organizations/{}/invitations", org_uuid),
+            &format!("/api/organizations/{}/invitations", org_uuid),
             bearer,
         ))
         .await
@@ -383,7 +383,7 @@ impl ButtrBaseClient {
         self.send_empty(self.user_request(
             Method::DELETE,
             &format!(
-                "/api/v1/organizations/{}/invitations/{}",
+                "/api/organizations/{}/invitations/{}",
                 org_uuid, invitation_id
             ),
             bearer,
@@ -1518,7 +1518,7 @@ mod tests {
         let org_uuid = uuid::Uuid::nil();
         server.mock(|when, then| {
             when.method(POST)
-                .path(format!("/api/v1/organizations/{}/invitations", org_uuid));
+                .path(format!("/api/organizations/{}/invitations", org_uuid));
             then.status(200).json_body(json!({
                 "id": 1,
                 "org_uuid": org_uuid,
@@ -1544,7 +1544,7 @@ mod tests {
     async fn test_preview_invitation() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(GET).path("/api/v1/invitations/Bd9abc/preview");
+            when.method(GET).path("/api/auth/invitations/Bd9abc");
             then.status(200).json_body(json!({
                 "org_uuid": "00000000-0000-0000-0000-000000000001",
                 "org_name": "Acme Inc",
@@ -1565,7 +1565,7 @@ mod tests {
     async fn test_accept_invitation() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST).path("/api/v1/invitations/Bd9abc/accept");
+            when.method(POST).path("/api/auth/invitations/Bd9abc/accept");
             then.status(200).json_body(json!({
                 "org_uuid": "00000000-0000-0000-0000-000000000001",
                 "org_name": "Acme Inc",
@@ -1584,7 +1584,7 @@ mod tests {
         let org_uuid = uuid::Uuid::nil();
         server.mock(|when, then| {
             when.method(GET)
-                .path(format!("/api/v1/organizations/{}/invitations", org_uuid));
+                .path(format!("/api/organizations/{}/invitations", org_uuid));
             then.status(200).json_body(json!([{
                 "id": 1,
                 "email": "bob@example.com",
@@ -1606,7 +1606,7 @@ mod tests {
         let org_uuid = uuid::Uuid::nil();
         server.mock(|when, then| {
             when.method(DELETE)
-                .path(format!("/api/v1/organizations/{}/invitations/42", org_uuid));
+                .path(format!("/api/organizations/{}/invitations/42", org_uuid));
             then.status(204).body("");
         });
         let client = make_client(&server);
