@@ -523,6 +523,34 @@ client.update_role_permissions(1, &serde_json::json!({
 })).await?;
 ```
 
+## Organization Invitations
+
+Generate and consume secure `gv_tkn_` prefixed invitation tokens to securely onboard users with strict role bindings.
+
+```rust
+use buttrbase_sdk::requests::CreateInvitationRequest;
+
+// 1. Generate an invitation (Admin only)
+let invite = client
+    .create_invitation(
+        "org-uuid",
+        CreateInvitationRequest {
+            email: "new.hire@example.com".to_string(),
+            role: "member".to_string(),
+            teams: vec!["engineering".to_string()],
+        },
+    )
+    .await?;
+println!("{}", invite.token); // e.g. "gv_tkn_8a9b2c3d..."
+
+// 2. Preview the invitation (Unauthenticated, safe for public UI)
+let preview = client.get_invitation_preview("gv_tkn_8a9b2c3d...").await?;
+println!("{} {}", preview.org_name, preview.role);
+
+// 3. Accept the invitation (Requires authenticated user)
+client.accept_invitation("gv_tkn_8a9b2c3d...").await?;
+```
+
 ## Teams
 
 ```rust

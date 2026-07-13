@@ -125,6 +125,9 @@ impl Verifier {
             None => validation.validate_aud = false,
         }
         validation.set_issuer(&[&self.config.issuer]);
+        // Hardening: reject not-before and allow small clock skew (60s).
+        validation.validate_nbf = true;
+        validation.leeway = 60; // seconds
 
         let data = decode::<Claims>(token, &key, &validation)
             .map_err(|e| VerifyError::InvalidToken(e.to_string()))?;
