@@ -91,6 +91,10 @@ let mut client = ButtrBaseClient::new("https://api.buttrbase.com".into());
 
 ## Authentication
 
+> **Guide:** [Verifying session tokens for the multi-org onboarding flow](docs/verifying-session-tokens.md)
+> — how a backend validates the RS256 org-scoped session token (and why it rejects the HS256
+> fast-login token by design).
+
 ### Registration
 
 ```rust
