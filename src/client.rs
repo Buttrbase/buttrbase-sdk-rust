@@ -32,7 +32,7 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait ButtrbaseTransport: Send + Sync {
-    async fn execute(&self, req: reqwest::Request) -> Result<reqwest::Response, reqwest::Error>;
+    async fn execute(&self, req: reqwest::Request) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Clone)]
@@ -42,8 +42,17 @@ pub struct DefaultTransport {
 
 #[async_trait]
 impl ButtrbaseTransport for DefaultTransport {
-    async fn execute(&self, req: reqwest::Request) -> Result<reqwest::Response, reqwest::Error> {
-        self.client.execute(req).await
+    async fn execute(&self, req: reqwest::Request) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self.client.execute(req).await?;
+        let status = resp.status();
+        let mut builder = http::Response::builder()
+            .status(status)
+            .version(resp.version());
+        for (k, v) in resp.headers() {
+            builder = builder.header(k, v);
+        }
+        let bytes = resp.bytes().await?;
+        Ok(builder.body(bytes)?)
     }
 }
 
@@ -195,7 +204,8 @@ impl ButtrBaseClient {
         if status.is_success() {
             return Ok(());
         }
-        let body = resp.text().await.unwrap_or_default();
+        let body_bytes = resp.into_body();
+        let body = String::from_utf8(body_bytes.to_vec()).unwrap_or_default();
         Err(parse_error_body(status, &body))
     }
 
@@ -1172,10 +1182,10 @@ impl ButtrBaseClient {
 
 // ── Response parsing helpers ──────────────────────────────────────────────
 
-async fn parse_response<T: DeserializeOwned>(resp: Response) -> Result<T, Error> {
+async fn parse_response<T: DeserializeOwned>(resp: http::Response<bytes::Bytes>) -> Result<T, Error> {
     let status = resp.status();
     if status.is_success() {
-        let bytes = resp.bytes().await?;
+        let bytes = resp.into_body();
         serde_json::from_slice(&bytes).map_err(|e| {
             // Preserve the raw body in the error message for debugging.
             let preview: String = String::from_utf8_lossy(&bytes[..bytes.len().min(200)])
@@ -1186,7 +1196,8 @@ async fn parse_response<T: DeserializeOwned>(resp: Response) -> Result<T, Error>
             }
         })
     } else {
-        let body = resp.text().await.unwrap_or_default();
+        let body_bytes = resp.into_body();
+        let body = String::from_utf8(body_bytes.to_vec()).unwrap_or_default();
         Err(parse_error_body(status, &body))
     }
 }
