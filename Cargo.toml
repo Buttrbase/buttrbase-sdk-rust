@@ -36,6 +36,7 @@ jsonwebtoken = { version = "10.4.0", default-features = false, features = ["rust
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+async-trait = "0.1.91"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
