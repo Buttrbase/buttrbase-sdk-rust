@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0 — HS256 introspection fallback
+
+- Added transparent network-fallback to `/api/auth/introspect` for `HS256` tokens inside `ButtrBaseClient::verify_token`. Allows SDK verifiers to cleanly consume both `HS256` (max-speed login tokens) and `RS256` (drifting refreshed JWKS tokens) identically.
+- Make sure to set `INTROSPECTION_API_KEY` in the environment if you plan on verifying `HS256` tokens.
+
 ## 0.7.0 — consumed by HumChat desktop client
 
 Wired into `zlack_client_slint` (HumChat Slint desktop client). No public API changes; version bump signals first desktop-client consumer.

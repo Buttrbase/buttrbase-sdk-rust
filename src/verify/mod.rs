@@ -12,4 +12,4 @@ mod jwks_cache;
 mod verifier;
 
 pub use error::VerifyError;
-pub use verifier::{AuthContext, Claims, Verifier, VerifierConfig};
+pub use verifier::{AuthContext, Claims, ClaimsData, Verifier, VerifierConfig};

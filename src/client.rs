@@ -215,12 +215,55 @@ impl ButtrBaseClient {
     /// cache and automatic key-rotation detection (one forced refetch on
     /// `kid` miss). No round-trip on the hot path.
     pub async fn verify_token(&self, token: &str) -> Result<Claims, Error> {
+        if let Ok(header) = jsonwebtoken::decode_header(token) {
+            if header.alg == jsonwebtoken::Algorithm::HS256 {
+                let req = self.app_request(Method::POST, "/api/auth/introspect")
+                    .header("X-Introspection-Key", std::env::var("INTROSPECTION_API_KEY").unwrap_or_default())
+                    .json(&serde_json::json!({ "token": token }));
+                
+                let resp: serde_json::Value = self.send(req).await?;
+                if resp.get("active").and_then(|v| v.as_bool()) != Some(true) {
+                    return Err(Error::Unexpected { status: 401, body: "token inactive".to_string() });
+                }
+                
+                let data = resp.get("data");
+                let user_uuid_str = data.and_then(|d| d.get("user_uuid")).and_then(|v| v.as_str()).unwrap_or_default();
+                let org_uuid_str = data.and_then(|d| d.get("org_uuid")).and_then(|v| v.as_str()).unwrap_or_default();
+                let user_uuid = Uuid::parse_str(user_uuid_str).unwrap_or_default();
+                let org_uuid = Uuid::parse_str(org_uuid_str).unwrap_or_default();
+                let exp = resp.get("exp").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let roles = data.and_then(|d| d.get("roles")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                
+                return Ok(Claims {
+                    sub: user_uuid,
+                    org: org_uuid,
+                    exp,
+                    iat: 0,
+                    scope: vec![],
+                    data: Some(crate::verify::ClaimsData {
+                        roles,
+                        email: None,
+                        org_uuid: Some(org_uuid),
+                        user_uuid: Some(user_uuid),
+                    }),
+                });
+            }
+        }
         Ok(self.verifier.verify(token).await?)
     }
 
     /// Extract and verify a `Bearer <token>` from HTTP request headers.
     pub async fn verify_bearer(&self, headers: &HeaderMap) -> Result<AuthContext, Error> {
-        Ok(self.verifier.verify_bearer(headers).await?)
+        let auth = headers
+            .get(http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if !auth.starts_with("Bearer ") {
+            return Err(Error::Unexpected { status: 401, body: "missing bearer".into() });
+        }
+        let token = &auth[7..];
+        let claims = self.verify_token(token).await?;
+        Ok(AuthContext::from(claims))
     }
 
     // ── OTP / magic-link auth ─────────────────────────────────────────────
