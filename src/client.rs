@@ -1062,6 +1062,39 @@ impl ButtrBaseClient {
         .await
     }
 
+    /// Send an transactional email with custom `from_address` and `reply_to` headers.
+    pub async fn send_email_with_reply_to(
+        &self,
+        to: &str,
+        subject: &str,
+        html_body: Option<&str>,
+        text_body: Option<&str>,
+        from_address: Option<&str>,
+        reply_to: Option<&str>,
+    ) -> Result<serde_json::Value, Error> {
+        let mut body = serde_json::json!({
+            "to": to,
+            "subject": subject,
+        });
+        if let Some(h) = html_body {
+            body["html_body"] = serde_json::Value::String(h.to_string());
+        }
+        if let Some(t) = text_body {
+            body["text_body"] = serde_json::Value::String(t.to_string());
+        }
+        if let Some(f) = from_address {
+            body["from_address"] = serde_json::Value::String(f.to_string());
+        }
+        if let Some(r) = reply_to {
+            body["reply_to"] = serde_json::Value::String(r.to_string());
+        }
+        self.send(
+            self.app_request(Method::POST, "/api/email/send")
+                .json(&body),
+        )
+        .await
+    }
+
     // ── Backwards compatibility & missing integration methods ────────────────
 
     /// Deprecated alias for [`send_magic_link`](Self::send_magic_link); kept for
