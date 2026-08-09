@@ -308,8 +308,15 @@ impl ButtrBaseClient {
         .await
     }
 
-    /// Verify the OTP the user received. Returns a `TokenPair` whose
-    /// `token` field is the `signup_token` for `finalize_registration`.
+    /// Verify the OTP the user received. Returns a `TokenPair` carrying a
+    /// real signed access token (`buttrbase-backend-rust`
+    /// `routes/auth_core.rs::verify_otp` calls `sign_access_token` /
+    /// `issue_tokens_with_email` in both its org and no-org branches — this
+    /// is not a special short-lived "signup" token type). Callers on the
+    /// signup path pass `TokenPair::token` straight through as the
+    /// `signup_token` argument to `finalize_registration`; callers on the
+    /// login path store it directly as the session's access token. Both
+    /// uses work because the two are the same JWT shape.
     pub async fn verify_otp(
         &self,
         email: &str,
