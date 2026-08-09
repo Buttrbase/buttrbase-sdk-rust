@@ -1,3 +1,13 @@
+# Declares this crate as its own workspace root so Cargo's ancestor-directory
+# workspace discovery stops here instead of walking up to an unrelated stray
+# `~/Cargo.toml` (observed 2026-08-09: a `[workspace]` at the user's home
+# directory, unrelated to buttrbase or zlack, whose `members` reference paths
+# that don't exist on this machine — breaks `cargo check` for ANY crate
+# nested under $HOME that lacks this opt-out). Not touching that file: it is
+# shared machine state outside this repo's scope. This is the standard,
+# non-invasive fix on the crate side.
+[workspace]
+
 [package]
 name = "buttrbase-sdk"
 version = "0.7.0"

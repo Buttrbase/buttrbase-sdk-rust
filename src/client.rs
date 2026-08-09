@@ -324,12 +324,29 @@ impl ButtrBaseClient {
         .await
     }
 
-    /// Legacy `send_otp` — uses slug-based app identifiers which the
-    /// backend no longer accepts. Migrate to `send_otp(email, app_uuid)`.
-    #[deprecated(
-        since = "0.3.0",
-        note = "slug-based identifiers are no longer accepted; use send_otp(email, app_uuid)"
-    )]
+    /// Send an OTP through the ORG-SCOPED app route
+    /// (`POST /api/app/auth/otp/send`, `buttrbase-backend-rust`
+    /// `routes/app_auth.rs::otp_send`).
+    ///
+    /// # Correction (2026-08-09): the previous deprecation note here was FALSE
+    /// This method was previously marked `#[deprecated]` with a note claiming
+    /// "slug-based identifiers are no longer accepted". Read against the live
+    /// backend source, that is wrong: `otp_send` still matches `app_name`
+    /// as a slug FIRST (`find_app_by_name_or_uuid`, name-match before the
+    /// `app_uuid` fallback) and still requires non-empty `org_uuid`/
+    /// `org_name`. The route is live and org-scoped, not obsolete. Removed
+    /// the attribute rather than leave a false claim standing next to a
+    /// method callers may reasonably need — see `verify_otp_with_org` for
+    /// the analogous, corrected story on the verify side.
+    ///
+    /// Prefer plain `send_otp(email, app_uuid)` when you don't need org
+    /// scoping at send time (the paired `verify_otp_with_org` still enforces
+    /// org membership at verify time). Use this method directly only if you
+    /// already have real `app_id`/`app_name`/`org_name` values; if you only
+    /// have `app_uuid` + `org_uuid`, there is currently no send-side
+    /// equivalent of `verify_otp_with_org` — see that method's doc comment
+    /// for why the verify path needed one and the send path was out of
+    /// scope for that change.
     pub async fn send_otp_legacy(
         &self,
         app_id: i32,
@@ -352,12 +369,129 @@ impl ButtrBaseClient {
         .await
     }
 
-    /// Legacy `verify_otp` — uses slug-based app identifiers which the
-    /// backend no longer accepts. Migrate to `verify_otp(email, otp, app_uuid)`.
-    #[deprecated(
-        since = "0.3.0",
-        note = "slug-based identifiers are no longer accepted; use verify_otp(email, otp, app_uuid)"
-    )]
+    /// App-id sentinel sent by [`verify_otp_with_org`] on the org-scoped
+    /// verify path when the caller has no numeric `app_id` — only a UUID.
+    ///
+    /// Traced against `buttrbase-backend-rust` source (2026-08-09, not
+    /// executed — there is no live backend/test tenancy available from this
+    /// environment): `app_id` is used ONLY for token-*policy* resolution
+    /// (`decide_access_alg`, `resolve_token_policy`, the per-scope
+    /// step-up-gate check inside `resolve_token_scopes`) — never for the
+    /// user/org identity lookup (`resolve_otp_user` takes `_app_id: i32`
+    /// and never reads it; the org lookup is keyed entirely on `org_uuid`).
+    /// `resolve_token_policy` resolves an unmatched `(app_id, org_uuid)` /
+    /// `(app_id, NIL_ORG)` composite key to `ResolvedTokenPolicy::default()`,
+    /// whose `scope_strategy_windowed` is `false` — the same "no app-level
+    /// step-up policy configured" default any ordinary app without this
+    /// feature gets. With `windowed == false` the per-scope gate loop in
+    /// `resolve_token_scopes` never runs, so this sentinel cannot widen
+    /// scopes, strip gating that would otherwise apply, or misdirect the
+    /// org boundary — it degrades only to the platform's existing default
+    /// policy (HS256, unwindowed scopes). `i32::MAX` is additionally chosen
+    /// to make an accidental collision with a real sequential `app_id`
+    /// primary key effectively impossible.
+    const APP_ID_UNKNOWN: i32 = i32::MAX;
+
+    /// Verify the OTP the user received, ENFORCING organization scope when
+    /// `org_uuid` is `Some`.
+    ///
+    /// # Why this method exists — do not "simplify" it back to `verify_otp`
+    /// `verify_otp` posts to `/api/v1/auth/otp/verify`
+    /// (`buttrbase-backend-rust` `routes/auth_core.rs::verify_otp`), which
+    /// has NO org parameter: any account matching email+otp succeeds
+    /// regardless of which organization the caller is trying to enter.
+    /// Dropping the org argument to make a call site compile silently
+    /// removes org scoping from authentication — do not do that.
+    ///
+    /// This method instead targets the ORG-ENFORCING route
+    /// (`POST /api/app/auth/otp/verify`, `routes/app_auth.rs::otp_verify`)
+    /// when `org_uuid` is `Some`. Traced against that handler's source (not
+    /// executed): it 400s if `org_uuid` is empty, `Uuid::parse_str`s it
+    /// (400 on garbage), and resolves the user WITHIN that org via
+    /// `resolve_otp_user`, which 404s if the account has no `orgusers` row
+    /// in the target org. `app_uuid` there is `Option<Uuid>`, so this route
+    /// is not purely slug-based despite what `verify_otp_legacy`'s old
+    /// (removed) deprecation note claimed.
+    ///
+    /// When `org_uuid` is `None` (the signup path never runs the
+    /// pre-OTP org lookup, and a lookup that failed open also leaves this
+    /// `None` — see call-site comments), this delegates to plain
+    /// [`Self::verify_otp`] — byte-identical to the pre-org-scoping
+    /// request, so signup and lookup-outage flows are unaffected.
+    ///
+    /// # Fields this route requires that a UUID-only caller cannot supply
+    /// The backend's `OtpVerifyRequest` also requires `app_name: String`
+    /// and `app_id: i32`, which a caller holding only `app_uuid` (no
+    /// numeric id or human-readable name) cannot supply real values for.
+    /// Traced against source (not executed):
+    /// - `app_name`: `find_app_by_name_or_uuid` tries a name-match FIRST
+    ///   and falls back to the `app_uuid` hint only on a miss. This sends
+    ///   `app_uuid`'s own string form, making a collision with a real
+    ///   registered app name vanishingly unlikely and forcing the
+    ///   (correct) uuid-fallback branch.
+    /// - `app_id`: see [`Self::APP_ID_UNKNOWN`] — policy-only, traced safe.
+    /// - `org_name`: `resolve_otp_user` never receives `org_name` — the org
+    ///   lookup is 100% `org_uuid`-keyed. `org_name` is only ever embedded
+    ///   as a display claim in the minted JWT via `sign_access_token`/
+    ///   `sign_refresh_token`. This sends a value derived from `org_uuid`
+    ///   (never empty, since the route 400s on an empty string) rather
+    ///   than a fabricated name, and tags it so a decoded token visibly
+    ///   shows it was populated by a uuid-only caller.
+    ///
+    /// None of the three substitutions above affect the org-membership
+    /// boundary this method exists to close — that boundary is enforced
+    /// entirely by `org_uuid`, checked server-side against real
+    /// `organizations`/`orgusers` rows.
+    ///
+    /// # What is NOT verified by this crate
+    /// There is no live backend or test tenancy reachable from this
+    /// environment. Nothing above was empirically exercised — it is traced
+    /// from `buttrbase-backend-rust` source only. Neither "a same-org user
+    /// authenticates" nor "a cross-org user is refused" has been run. See
+    /// the `#[ignore]`d integration test in this crate for exactly what
+    /// must be run, and where, before this is trusted in production.
+    pub async fn verify_otp_with_org(
+        &self,
+        email: &str,
+        otp: &str,
+        app_uuid: Uuid,
+        org_uuid: Option<&str>,
+    ) -> Result<TokenPair, Error> {
+        let Some(org_uuid) = org_uuid.filter(|s| !s.trim().is_empty()) else {
+            // No org context — identical to the pre-org-scoping request.
+            return self.verify_otp(email, otp, app_uuid).await;
+        };
+        let body = serde_json::json!({
+            "otp": otp,
+            "email": email,
+            "app_uuid": app_uuid,
+            "app_name": format!("uuid-only:{app_uuid}"),
+            "app_id": Self::APP_ID_UNKNOWN,
+            "org_uuid": org_uuid,
+            "org_name": format!("uuid-only:{org_uuid}"),
+        });
+        self.send(
+            self.app_request(Method::POST, "/api/app/auth/otp/verify")
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Verify an OTP through the ORG-SCOPED app route directly, when the
+    /// caller already has real `app_id`/`app_name`/`org_name` values (not
+    /// just `app_uuid`/`org_uuid`).
+    ///
+    /// # Correction (2026-08-09): the previous deprecation note here was FALSE
+    /// This method was previously marked `#[deprecated]` with a note
+    /// claiming "slug-based identifiers are no longer accepted". Read
+    /// against the live backend source, that is wrong: this method posts to
+    /// `POST /api/app/auth/otp/verify` (`routes/app_auth.rs::otp_verify`),
+    /// which is live, matches `app_name` as a slug FIRST
+    /// (`find_app_by_name_or_uuid`), and genuinely enforces org membership
+    /// (`resolve_otp_user` 404s outside the target org). It is the same
+    /// route [`Self::verify_otp_with_org`] now targets for uuid-only
+    /// callers. Removed the attribute rather than leave a false claim
+    /// standing on a route this crate now depends on.
     pub async fn verify_otp_legacy(
         &self,
         app_id: i32,
@@ -1546,6 +1680,204 @@ mod tests {
         let pair = client.verify_otp_legacy(1, "myapp", "u@e.com", "123456", "o-uuid", "myorg").await.unwrap();
         assert_eq!(pair.token, "access_jwt");
         assert_eq!(pair.refresh_token, Some("refresh_jwt".to_string()));
+    }
+
+    // ── verify_otp_with_org (task #69: org-scoping fix) ─────────────────────
+    //
+    // These two `#[tokio::test]`s below are routing/contract tests only —
+    // same style and same confidence level as the other httpmock tests in
+    // this file (method + path against a local mock server, NOT a real
+    // backend). They confirm which URL each branch calls; they say nothing
+    // about org enforcement, because a mock server has no `organizations`/
+    // `orgusers` tables to enforce membership against. That is exactly what
+    // the two `#[ignore]`d tests further below exist to check, against a
+    // real deployment — do not mistake the routing tests below for coverage
+    // of the security property.
+    //
+    // NOTE: none of the tests in this section (routing or `#[ignore]`d) were
+    // compiled in this session — disk on the dev box hit ~130MiB free mid-task
+    // (see task-69-report.md), below the point it is safe to run `cargo
+    // check`/`cargo test` again. Written to match the existing httpmock
+    // patterns in this file (`test_verify_otp_success` /
+    // `test_verify_otp_legacy_success` above) as closely as possible to
+    // minimize the chance of a syntax/API mistake, but that is a source-level
+    // argument, not a build result — treat as unverified until `cargo test`
+    // is actually run.
+
+    #[tokio::test]
+    async fn test_verify_otp_with_org_none_delegates_to_v1_route() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/otp/verify");
+            then.status(200).json_body(json!({
+                "token": "v1_access_or_signup_jwt",
+                "refresh_token": null,
+                "user_uuid": null
+            }));
+        });
+        let client = make_client(&server);
+        let pair = client
+            .verify_otp_with_org("u@e.com", "123456", uuid::Uuid::nil(), None)
+            .await
+            .unwrap();
+        assert_eq!(pair.token, "v1_access_or_signup_jwt");
+    }
+
+    #[tokio::test]
+    async fn test_verify_otp_with_org_some_hits_org_enforcing_route() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/app/auth/otp/verify");
+            then.status(200).json_body(json!({
+                "token": "org_scoped_access_jwt",
+                "refresh_token": "refresh_jwt",
+                "user_uuid": "00000000-0000-0000-0000-000000000002"
+            }));
+        });
+        let client = make_client(&server);
+        let pair = client
+            .verify_otp_with_org("u@e.com", "123456", uuid::Uuid::nil(), Some("org-uuid-a"))
+            .await
+            .unwrap();
+        assert_eq!(pair.token, "org_scoped_access_jwt");
+    }
+
+    #[tokio::test]
+    async fn test_verify_otp_with_org_empty_string_treated_as_none() {
+        // An empty (not None) org_uuid must still take the no-org path — a
+        // caller passing `Some("")` (e.g. from an `Option<String>` that was
+        // initialized to `Some(String::new())` rather than `None`) must not
+        // be sent to a route that 400s on an empty org_uuid.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/v1/auth/otp/verify");
+            then.status(200).json_body(json!({
+                "token": "v1_jwt",
+                "refresh_token": null,
+                "user_uuid": null
+            }));
+        });
+        let client = make_client(&server);
+        let pair = client
+            .verify_otp_with_org("u@e.com", "123456", uuid::Uuid::nil(), Some(""))
+            .await
+            .unwrap();
+        assert_eq!(pair.token, "v1_jwt");
+    }
+
+    // ── verify_otp_with_org — org-scoping EXECUTABLE SPEC (NOT RUN) ─────────
+    //
+    // Two-direction spec for the actual security property this method
+    // exists for: a same-org user authenticates; a cross-org user is
+    // REFUSED. Neither has been executed — there is no live
+    // buttrbase-backend-rust deployment or seeded test tenancy reachable
+    // from the environment this change was written in. `#[ignore]` keeps
+    // both out of the default `cargo test` run so they can never silently
+    // report green on nothing.
+    //
+    // Do NOT replace either test below with an httpmock server that scripts
+    // the response this same change would produce for either direction —
+    // that would prove only "the code does what it does", not that the
+    // real backend's `orgusers` membership check
+    // (`buttrbase-backend-rust` `src/routes/app_auth.rs::resolve_otp_user`)
+    // actually refuses a real cross-org identity. A mock that asserts your
+    // own implementation back at you is worse than no test.
+    //
+    // ## Required test tenancy (set up once, out of band, before running)
+    // - A real, reachable buttrbase-backend-rust deployment — staging, not
+    //   prod — with `SECRET_KEY`/DB configured.
+    // - Real app credentials for that deployment:
+    //   `BUTTRBASE_TEST_CLIENT_ID`, `BUTTRBASE_TEST_CLIENT_SECRET`.
+    // - `BUTTRBASE_TEST_URL` — that deployment's base URL.
+    // - `BUTTRBASE_TEST_APP_UUID` — the app's real `app_uuid`.
+    // - Two real, distinct `organizations` rows under that app:
+    //   `BUTTRBASE_TEST_ORG_A_UUID` and `BUTTRBASE_TEST_ORG_B_UUID`.
+    // - A real user account with a real `orgusers` row in ORG A and
+    //   deliberately NO `orgusers` row in ORG B:
+    //   `BUTTRBASE_TEST_USER_EMAIL`.
+    //
+    // ## Getting a real OTP into each test
+    // OTPs are single-use (cleared on the first successful verify) and
+    // time-boxed (10 minutes — `OTP_TTL_MINUTES` in
+    // `buttrbase-backend-rust` `routes/auth_core.rs`), so this spec does not
+    // try to auto-mint one — the SDK's own `send_otp` deliberately discards
+    // the response body (`Result<(), Error>`), so it cannot hand back a
+    // dev-echoed code even when the backend has `BUTTRBASE_OTP_DEV_ECHO`
+    // set (a real gap worth a follow-up: teach `send_otp` to optionally
+    // surface `dev_code` when present, for exactly this kind of test).
+    // Instead, immediately before running each test:
+    //   1. Trigger `POST /api/v1/auth/otp/send` for `BUTTRBASE_TEST_USER_EMAIL`
+    //      against `BUTTRBASE_TEST_APP_UUID` (e.g. `bb.send_otp(...)` from a
+    //      scratch binary, or `curl`).
+    //   2. Read the plaintext OTP from the backend's own log line — when no
+    //      SES credentials are configured it logs
+    //      `tracing::info!(target: "otp", email = %email, otp = %otp_plain,
+    //      "OTP generated (no SES credentials)")` (`auth_core.rs::send_otp`)
+    //      — or from the real inbox if SES is configured.
+    //   3. Export it as `BUTTRBASE_TEST_OTP` within the 10-minute TTL.
+    //   4. `cargo test --ignored verify_otp_with_org_ -- --test-threads=1`
+    //      (each test needs its OWN fresh OTP — repeat steps 1-3 per test).
+
+    #[tokio::test]
+    #[ignore = "requires a live buttrbase-backend-rust deployment + seeded \
+                two-org test tenancy + a freshly-minted real OTP; see the \
+                doc comment directly above this test section for exact setup"]
+    async fn verify_otp_with_org_same_org_user_authenticates() {
+        let client_id = std::env::var("BUTTRBASE_TEST_CLIENT_ID").expect("BUTTRBASE_TEST_CLIENT_ID");
+        let client_secret =
+            std::env::var("BUTTRBASE_TEST_CLIENT_SECRET").expect("BUTTRBASE_TEST_CLIENT_SECRET");
+        let base_url = std::env::var("BUTTRBASE_TEST_URL").expect("BUTTRBASE_TEST_URL");
+        let bb = ButtrBaseClient::with_base_url(client_id, client_secret, base_url);
+
+        let app_uuid: Uuid = std::env::var("BUTTRBASE_TEST_APP_UUID")
+            .expect("BUTTRBASE_TEST_APP_UUID")
+            .parse()
+            .expect("BUTTRBASE_TEST_APP_UUID must be a valid UUID");
+        let email = std::env::var("BUTTRBASE_TEST_USER_EMAIL").expect("BUTTRBASE_TEST_USER_EMAIL");
+        let org_a = std::env::var("BUTTRBASE_TEST_ORG_A_UUID").expect("BUTTRBASE_TEST_ORG_A_UUID");
+        let otp = std::env::var("BUTTRBASE_TEST_OTP")
+            .expect("BUTTRBASE_TEST_OTP — mint one per the doc comment above, this is single-use");
+
+        // Legitimate, authorized access: the real user IS a member of org A.
+        // Proving this succeeds matters as much as proving org B is refused —
+        // a fix that blocks everything trivially "passes" an attack-only test.
+        let result = bb.verify_otp_with_org(&email, &otp, app_uuid, Some(&org_a)).await;
+        assert!(
+            result.is_ok(),
+            "same-org user must authenticate, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live buttrbase-backend-rust deployment + seeded \
+                two-org test tenancy + a freshly-minted real OTP; see the \
+                doc comment above verify_otp_with_org_same_org_user_authenticates \
+                for exact setup"]
+    async fn verify_otp_with_org_cross_org_user_is_refused() {
+        let client_id = std::env::var("BUTTRBASE_TEST_CLIENT_ID").expect("BUTTRBASE_TEST_CLIENT_ID");
+        let client_secret =
+            std::env::var("BUTTRBASE_TEST_CLIENT_SECRET").expect("BUTTRBASE_TEST_CLIENT_SECRET");
+        let base_url = std::env::var("BUTTRBASE_TEST_URL").expect("BUTTRBASE_TEST_URL");
+        let bb = ButtrBaseClient::with_base_url(client_id, client_secret, base_url);
+
+        let app_uuid: Uuid = std::env::var("BUTTRBASE_TEST_APP_UUID")
+            .expect("BUTTRBASE_TEST_APP_UUID")
+            .parse()
+            .expect("BUTTRBASE_TEST_APP_UUID must be a valid UUID");
+        let email = std::env::var("BUTTRBASE_TEST_USER_EMAIL").expect("BUTTRBASE_TEST_USER_EMAIL");
+        let org_b = std::env::var("BUTTRBASE_TEST_ORG_B_UUID").expect("BUTTRBASE_TEST_ORG_B_UUID");
+        let otp = std::env::var("BUTTRBASE_TEST_OTP")
+            .expect("BUTTRBASE_TEST_OTP — mint one per the doc comment above, this is single-use");
+
+        // The adversarial case: same real user, same real (valid) OTP —
+        // only the org differs, and this user has NO `orgusers` row in
+        // org B. Must be refused, not silently authenticated into the
+        // wrong organization's data.
+        let result = bb.verify_otp_with_org(&email, &otp, app_uuid, Some(&org_b)).await;
+        assert!(
+            result.is_err(),
+            "cross-org user must be REFUSED, not authenticated; got: {result:?}"
+        );
     }
 
     // ── check_org_name ────────────────────────────────────────────────────
