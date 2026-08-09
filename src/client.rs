@@ -81,6 +81,17 @@ pub struct ButtrBaseClient {
     http: Client,
     transport: std::sync::Arc<dyn ButtrbaseTransport>,
     verifier: Verifier,
+    /// Which application's feature catalog entitlement checks resolve against.
+    ///
+    /// `/api/entitlements/check` REQUIRES `app_uuid` — the backend uses it to
+    /// select the catalog (`fetch_features_by_app_uuid`); the bearer supplies
+    /// the user/org, but not which app's features to evaluate. Omitting it is
+    /// a hard `400 missing field 'app_uuid'`, not a soft default.
+    ///
+    /// `None` preserves the historical (broken) body for callers that have not
+    /// set it, so adding this field breaks no existing consumer's build.
+    /// Set it via [`ButtrBaseClient::with_app_uuid`].
+    app_uuid: Option<Uuid>,
 }
 
 impl ButtrBaseClient {
@@ -149,6 +160,7 @@ impl ButtrBaseClient {
             http,
             transport,
             verifier,
+            app_uuid: None,
         }
     }
 
@@ -169,6 +181,21 @@ impl ButtrBaseClient {
     pub fn with_transport(mut self, transport: std::sync::Arc<dyn ButtrbaseTransport>) -> Self {
         self.transport = transport;
         self
+    }
+
+    /// Set the application whose feature catalog entitlement checks resolve
+    /// against. REQUIRED for [`check_entitlement`](Self::check_entitlement) and
+    /// [`check_entitlements`](Self::check_entitlements) — without it the
+    /// backend rejects the request with `400 missing field 'app_uuid'`.
+    pub fn with_app_uuid(mut self, app_uuid: Uuid) -> Self {
+        self.app_uuid = Some(app_uuid);
+        self
+    }
+
+    /// The configured application, if any. `None` means entitlement checks will
+    /// be rejected by the backend — see [`with_app_uuid`](Self::with_app_uuid).
+    pub fn app_uuid(&self) -> Option<Uuid> {
+        self.app_uuid
     }
 
     // ── Internal request helpers ──────────────────────────────────────────
@@ -554,7 +581,8 @@ impl ButtrBaseClient {
         bearer: &str,
         feature_key: &str,
     ) -> Result<EntitlementResult, Error> {
-        let body = serde_json::json!({ "feature_key": feature_key });
+        let mut body = serde_json::json!({ "feature_key": feature_key });
+        self.attach_app_uuid(&mut body);
         let resp: EntitlementCheckResponse = self
             .send(
                 self.user_request(Method::POST, "/api/entitlements/check", bearer)
@@ -564,6 +592,20 @@ impl ButtrBaseClient {
         Ok(resp.data)
     }
 
+    /// Add the configured `app_uuid` to an entitlement request body.
+    ///
+    /// Both entitlement endpoints require it; the bearer identifies the user
+    /// and org, but the backend still needs to know WHICH app's feature
+    /// catalog to evaluate against. When unset the field is omitted, which
+    /// reproduces the pre-existing behaviour (a `400` from the backend) rather
+    /// than inventing a default app — guessing here would silently evaluate a
+    /// caller against another application's entitlements.
+    fn attach_app_uuid(&self, body: &mut serde_json::Value) {
+        if let (Some(app_uuid), Some(obj)) = (self.app_uuid, body.as_object_mut()) {
+            obj.insert("app_uuid".to_string(), serde_json::json!(app_uuid));
+        }
+    }
+
     /// Check multiple feature keys in one call. Returns a map of
     /// `feature_key → EntitlementResult`.
     pub async fn check_entitlements(
@@ -571,7 +613,8 @@ impl ButtrBaseClient {
         bearer: &str,
         feature_keys: &[&str],
     ) -> Result<std::collections::HashMap<String, EntitlementResult>, Error> {
-        let body = serde_json::json!({ "feature_keys": feature_keys });
+        let mut body = serde_json::json!({ "feature_keys": feature_keys });
+        self.attach_app_uuid(&mut body);
         let resp: EntitlementBatchResponseData = self
             .send(
                 self.user_request(
@@ -2309,5 +2352,84 @@ mod tests {
         let headers = http::HeaderMap::new();
         let result = client.verify_bearer(&headers).await;
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod entitlement_app_uuid_tests {
+    use super::*;
+    use httpmock::prelude::*;
+    use serde_json::json;
+
+    const APP: &str = "c4de0a30-2462-48ad-b5a0-31b63486d920";
+
+    fn client(server: &MockServer) -> ButtrBaseClient {
+        ButtrBaseClient::with_base_url("bb_test_cid_test", "bb_test_sk_test", server.base_url())
+    }
+
+    /// The whole point of `with_app_uuid`: the backend REQUIRES `app_uuid` on
+    /// `/api/entitlements/check` (it selects the feature catalog). Without it
+    /// the live API answers `400 missing field 'app_uuid'`, which callers see
+    /// as a transport error and — in fail-closed gates — as a denial.
+    #[tokio::test]
+    async fn check_entitlement_sends_app_uuid_when_configured() {
+        let server = MockServer::start();
+        let app = Uuid::parse_str(APP).unwrap();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/entitlements/check")
+                .json_body(json!({ "feature_key": "hosted-index", "app_uuid": APP }));
+            then.status(200)
+                .json_body(json!({ "data": { "granted": true } }));
+        });
+
+        let bb = client(&server).with_app_uuid(app);
+        let result = bb.check_entitlement("tok", "hosted-index").await.unwrap();
+
+        mock.assert(); // body matched exactly, app_uuid included
+        assert!(result.granted);
+        assert_eq!(bb.app_uuid(), Some(app));
+    }
+
+    /// Batch endpoint takes the same field — regression guard, since it builds
+    /// its body separately and was equally broken.
+    #[tokio::test]
+    async fn check_entitlements_batch_sends_app_uuid_too() {
+        let server = MockServer::start();
+        let app = Uuid::parse_str(APP).unwrap();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/entitlements/check/batch")
+                .json_body(json!({ "feature_keys": ["a", "b"], "app_uuid": APP }));
+            then.status(200).json_body(json!({ "data": {} }));
+        });
+
+        let bb = client(&server).with_app_uuid(app);
+        bb.check_entitlements("tok", &["a", "b"]).await.unwrap();
+
+        mock.assert();
+    }
+
+    /// Adding the field must not change what existing callers send. They keep
+    /// the historical (backend-rejected) body rather than silently being
+    /// attributed to some default application — guessing an app here would
+    /// evaluate a caller against another app's entitlements.
+    #[tokio::test]
+    async fn check_entitlement_omits_app_uuid_when_unset() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/entitlements/check")
+                .json_body(json!({ "feature_key": "hosted-index" }));
+            then.status(200)
+                .json_body(json!({ "data": { "granted": false } }));
+        });
+
+        let bb = client(&server); // no with_app_uuid
+        let result = bb.check_entitlement("tok", "hosted-index").await.unwrap();
+
+        mock.assert();
+        assert!(!result.granted);
+        assert_eq!(bb.app_uuid(), None);
     }
 }
