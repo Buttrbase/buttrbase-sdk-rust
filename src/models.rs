@@ -43,9 +43,21 @@ impl std::fmt::Display for Environment {
 /// Access + refresh token pair returned after OTP verification.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenPair {
+    /// The access token.
+    ///
+    /// `alias = "access_token"` because the backend spells it that way on
+    /// `/api/auth/magic-link/verify` (`VerifyResponse { access_token, token_type,
+    /// user, redirect_to }`). Without the alias this field is simply absent from
+    /// the payload and, being required, fails deserialization — so
+    /// `verify_magic_link` returned `Error::Unexpected` for every real response
+    /// and magic-link sign-in could not be completed through this SDK at all.
+    #[serde(alias = "access_token")]
     pub token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
+    /// The backend nests this under `user` on the magic-link response, so it
+    /// stays `None` there; endpoints that return it flat still populate it.
+    #[serde(default)]
     pub user_uuid: Option<Uuid>,
 }
 

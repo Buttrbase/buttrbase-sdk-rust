@@ -2433,3 +2433,37 @@ mod entitlement_app_uuid_tests {
         assert_eq!(bb.app_uuid(), None);
     }
 }
+
+#[cfg(test)]
+mod magic_link_shape_tests {
+    use super::*;
+    use crate::models::TokenPair;
+
+    /// The backend's `/api/auth/magic-link/verify` returns
+    /// `{access_token, token_type, user:{...}, redirect_to}`. `TokenPair` names
+    /// the field `token`, so without `alias = "access_token"` this payload
+    /// fails to deserialize and magic-link sign-in cannot complete.
+    #[test]
+    fn token_pair_accepts_the_backends_access_token_spelling() {
+        let body = serde_json::json!({
+            "access_token": "eyJ.a.b",
+            "token_type": "Bearer",
+            "user": { "user_uuid": "c4de0a30-2462-48ad-b5a0-31b63486d920", "email": "a@b.c" },
+            "redirect_to": "https://example.test/cb"
+        });
+        let tp: TokenPair = serde_json::from_value(body).expect("must deserialize");
+        assert_eq!(tp.token, "eyJ.a.b");
+        // Nested under `user` on this endpoint, so flat extraction yields None —
+        // asserted so a future flattening change is a deliberate decision.
+        assert_eq!(tp.user_uuid, None);
+    }
+
+    /// Endpoints that already spelled it `token` must keep working.
+    #[test]
+    fn token_pair_still_accepts_the_plain_token_spelling() {
+        let body = serde_json::json!({ "token": "plain", "refresh_token": "r" });
+        let tp: TokenPair = serde_json::from_value(body).expect("must deserialize");
+        assert_eq!(tp.token, "plain");
+        assert_eq!(tp.refresh_token.as_deref(), Some("r"));
+    }
+}
