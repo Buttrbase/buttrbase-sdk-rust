@@ -397,6 +397,35 @@ impl ButtrBaseClient {
     /// policy (HS256, unwindowed scopes). `i32::MAX` is additionally chosen
     /// to make an accidental collision with a real sequential `app_id`
     /// primary key effectively impossible.
+    ///
+    /// *** CORRECTION 2026-08-09 — THE PARAGRAPH ABOVE IS WRONG WHERE IT
+    /// MATTERS. Read this before relying on it. ***
+    ///
+    /// "cannot widen scopes / strip gating that would otherwise apply" does
+    /// not hold. Verified in the backend, not inferred:
+    /// `resolve_token_scopes` (buttrbase-backend-rust
+    /// `src/routes/app_auth.rs:282-310`) runs the per-scope gate loop
+    /// **only inside `if windowed`**. Within that branch, any scope whose
+    /// `gates::resolve_gate(db, app_id, org_uuid, &scope)` reports
+    /// `required_factor != RequiredFactor::None` is EXCLUDED from the token.
+    ///
+    /// So `windowed == false` does not mean "gating is preserved" — it means
+    /// **the gate is never consulted**, and step-up-gated scopes (e.g. ones
+    /// requiring MFA) are handed out WITHOUT the step-up. That is strictly
+    /// wider than what a windowed policy would have issued.
+    ///
+    /// The "degrades only to the platform default" claim is therefore true
+    /// ONLY IF this app has no `token_policies` row. If it has one specifying
+    /// `scope_strategy = "windowed"`, this sentinel silently bypasses it.
+    /// Whether zlack's app has such a row was NOT determined — it needs a
+    /// query against the real database.
+    ///
+    /// THE FIX is server-side and already half-written in the backend:
+    /// `app_auth.rs:1009-1012` resolves `policy_app_id` from the app UUID via
+    /// `applications::Entity::find()`, with a comment saying that is what the
+    /// policy resolver wants. `:856` should do the same instead of trusting
+    /// `body.app_id`. Until that lands, DO NOT SHIP a client build that
+    /// reaches this path — see task #69/#80.
     const APP_ID_UNKNOWN: i32 = i32::MAX;
 
     /// Verify the OTP the user received, ENFORCING organization scope when
