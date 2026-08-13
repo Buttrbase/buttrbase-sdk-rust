@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.1 — Admin session revoke methods
+
+- **`revoke_jti(bearer, jti, ttl_seconds)`** → `POST /api/admin/sessions/revoke`
+  (least-privilege, one JWT).
+- **`org_revoke_all_sessions(bearer, org_uuid)`** → `POST /api/organizations/{org}/revoke-all-sessions`
+  (nuclear; do **not** use for single-user deprovision).
+- **`revoke_user_sessions(bearer, org, user, jtis, ttl)`** — least-privilege
+  **N × `revoke_jti`** helper. ButtrBase has **no** admin bulk-per-user revoke
+  route (verified against backend); org/user args are call-site documentation
+  only until a bulk route lands.
+- httpmock coverage for all three.
+
 ## 0.8.0 — HS256 introspection fallback
 
 - Added transparent network-fallback to `/api/auth/introspect` for `HS256` tokens inside `ButtrBaseClient::verify_token`. Allows SDK verifiers to cleanly consume both `HS256` (max-speed login tokens) and `RS256` (drifting refreshed JWKS tokens) identically.

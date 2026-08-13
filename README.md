@@ -352,9 +352,18 @@ client.upload_org_logo("org-uuid", logo_bytes).await?;
 ## Sessions & Devices
 
 ```rust
-// Org-level session management
-let sessions = client.org_session_inventory("org-uuid").await?;
-client.org_revoke_all_sessions("org-uuid").await?;
+// Org-level session management (nuclear — every user in the org)
+// Requires an admin/elevated user bearer; not for single-user deprovision.
+let revoked = client.org_revoke_all_sessions("admin-bearer", "org-uuid").await?;
+
+// Least-privilege: revoke one JWT by jti (POST /api/admin/sessions/revoke)
+client.revoke_jti("admin-bearer", "jti-value", 30 * 24 * 60 * 60).await?;
+
+// Per-user deprovision: NO bulk admin route exists on ButtrBase today.
+// Capture JTIs from your product session table, then N × revoke_jti:
+let (ok, err) = client.revoke_user_sessions(
+    "admin-bearer", "org-uuid", "user-uuid", &jtis, 30 * 24 * 60 * 60,
+).await?;
 
 // Device account management
 let accounts = client.list_device_accounts("device-uuid").await?;
@@ -827,8 +836,8 @@ client.delete_domain("org-uuid", domain.id).await?;
 ## Admin: Zero Trust & Security
 
 ```rust
-// Revoke a JWT by its JTI
-client.revoke_jti("jti-value").await?;
+// Revoke a JWT by its JTI (admin bearer required)
+client.revoke_jti("admin-bearer", "jti-value", 30 * 24 * 60 * 60).await?;
 
 // Org metrics
 let metrics = client.org_metrics("org-uuid").await?;

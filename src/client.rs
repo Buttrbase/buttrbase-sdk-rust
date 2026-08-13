@@ -1467,6 +1467,113 @@ impl ButtrBaseClient {
             .await?;
         Ok(resp.data)
     }
+
+    // ── Admin / session revocation ────────────────────────────────────────
+    //
+    // Backend surfaces (verified against buttrbase-backend-rust):
+    //   POST /api/admin/sessions/revoke              — one JWT by `jti`
+    //   POST /api/organizations/{org}/revoke-all-sessions — nuclear, all users
+    //   POST /api/devices/{device}/revoke-all         — device-scoped
+    //   GET/POST /api/auth/sessions/*                — self-service only
+    //
+    // There is **no** admin "revoke all sessions for user X" route. Products
+    // that deprovision one user must either:
+    //   • call [`revoke_jti`] once per captured JTI (least-privilege), or
+    //   • call [`org_revoke_all_sessions`] (nuclear — every user in the org).
+    // Prefer the former. Use [`revoke_user_sessions`] for the N×jti loop.
+
+    /// Default TTL for admin JTI blacklist entries (30 days = max refresh
+    /// lifetime on ButtrBase; server clamps to [60, 30 days]).
+    pub const DEFAULT_JTI_REVOKE_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+
+    /// Revoke one JWT by its `jti` claim.
+    ///
+    /// Hits `POST /api/admin/sessions/revoke` with the caller's **user** bearer
+    /// (admin / elevated actor). Body: `{ "jti", "ttl_seconds" }`.
+    pub async fn revoke_jti(
+        &self,
+        bearer: &str,
+        jti: &str,
+        ttl_seconds: i64,
+    ) -> Result<(), Error> {
+        let jti = jti.trim();
+        if jti.is_empty() {
+            return Err(Error::Unexpected {
+                status: 400,
+                body: "jti must not be empty".into(),
+            });
+        }
+        let body = serde_json::json!({
+            "jti": jti,
+            "ttl_seconds": ttl_seconds.max(60),
+        });
+        self.send_empty(
+            self.user_request(Method::POST, "/api/admin/sessions/revoke", bearer)
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Nuclear: revoke **all** device sessions for an organization.
+    ///
+    /// Hits `POST /api/organizations/{org_uuid}/revoke-all-sessions`.
+    /// **Do not** use for single-user deprovision — that terminates every
+    /// user in the org. Returns the `data.revoked` count when present.
+    pub async fn org_revoke_all_sessions(
+        &self,
+        bearer: &str,
+        org_uuid: &str,
+    ) -> Result<u64, Error> {
+        if org_uuid.trim().is_empty() {
+            return Err(Error::Unexpected {
+                status: 400,
+                body: "org_uuid must not be empty".into(),
+            });
+        }
+        let path = format!("/api/organizations/{}/revoke-all-sessions", org_uuid);
+        let resp: serde_json::Value = self
+            .send(self.user_request(Method::POST, &path, bearer))
+            .await?;
+        let revoked = resp
+            .pointer("/data/revoked")
+            .and_then(|v| v.as_u64())
+            .or_else(|| resp.get("revoked").and_then(|v| v.as_u64()))
+            .unwrap_or(0);
+        Ok(revoked)
+    }
+
+    /// Best-effort least-privilege multi-JTI revoke for one user's sessions.
+    ///
+    /// **API gap:** ButtrBase has no admin bulk-per-user revoke route. This
+    /// helper issues **one** [`revoke_jti`] call per entry in `jtis`. Returns
+    /// `(ok_count, err_count)`. Callers that need fail-open deprovision
+    /// should ignore individual errors after local blacklist has landed.
+    ///
+    /// `org_uuid` / `user_uuid` are **not** sent upstream (no route accepts
+    /// them for bulk revoke); they exist only so call sites stay self-documenting
+    /// when logging. Pass them for future-compat if a bulk route lands.
+    pub async fn revoke_user_sessions(
+        &self,
+        bearer: &str,
+        _org_uuid: &str,
+        _user_uuid: &str,
+        jtis: &[String],
+        ttl_seconds: i64,
+    ) -> Result<(usize, usize), Error> {
+        let mut ok = 0usize;
+        let mut err = 0usize;
+        for jti in jtis {
+            let jti = jti.trim();
+            if jti.is_empty() {
+                continue;
+            }
+            match self.revoke_jti(bearer, jti, ttl_seconds).await {
+                Ok(()) => ok += 1,
+                Err(_) => err += 1,
+            }
+        }
+        Ok((ok, err))
+    }
 }
 
 // ── Response parsing helpers ──────────────────────────────────────────────
@@ -2313,6 +2420,82 @@ mod tests {
         };
         let result = client.pricing_quote("tok", &req).await.unwrap();
         assert_eq!(result["quote_id"], "q-1");
+    }
+
+    // ── Session revoke (admin JTI + org nuclear + N×jti user helper) ──────
+
+    #[tokio::test]
+    async fn test_revoke_jti() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/admin/sessions/revoke")
+                .header("Authorization", "Bearer admin-tok")
+                .json_body(json!({ "jti": "jti-xyz", "ttl_seconds": 86400 }));
+            then.status(201).json_body(json!({
+                "data": {
+                    "id": 1,
+                    "jti": "jti-xyz",
+                    "revoked_at": "2026-01-01T00:00:00Z",
+                    "expires_at": "2026-02-01T00:00:00Z"
+                }
+            }));
+        });
+        let client = make_client(&server);
+        client
+            .revoke_jti("admin-tok", "jti-xyz", 86_400)
+            .await
+            .unwrap();
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_org_revoke_all_sessions() {
+        let server = MockServer::start();
+        let org = "00000000-0000-0000-0000-0000000000aa";
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path(format!("/api/organizations/{}/revoke-all-sessions", org));
+            then.status(200).json_body(json!({
+                "data": {
+                    "message": "Organization sessions revoked.",
+                    "org_uuid": org,
+                    "revoked": 7,
+                    "scope": "organization"
+                }
+            }));
+        });
+        let client = make_client(&server);
+        let n = client
+            .org_revoke_all_sessions("admin-tok", org)
+            .await
+            .unwrap();
+        assert_eq!(n, 7);
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_revoke_user_sessions_is_n_times_jti() {
+        // No bulk per-user route exists — helper must hit revoke once per JTI.
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/api/admin/sessions/revoke");
+            then.status(201).json_body(json!({ "data": { "jti": "x" } }));
+        });
+        let client = make_client(&server);
+        let (ok, err) = client
+            .revoke_user_sessions(
+                "admin-tok",
+                "org-1",
+                "user-1",
+                &["jti-a".into(), "jti-b".into(), "".into()],
+                ButtrBaseClient::DEFAULT_JTI_REVOKE_TTL_SECS,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok, 2);
+        assert_eq!(err, 0);
+        mock.assert_hits(2);
     }
 
     // ── checkout_session ───────────────────────────────────────────────────
