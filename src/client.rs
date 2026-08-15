@@ -40,10 +40,153 @@ pub struct DefaultTransport {
     client: reqwest::Client,
 }
 
+/// Total attempts (1 initial + 3 retries) for a replayable request.
+const MAX_ATTEMPTS: u32 = 4;
+/// First backoff step; doubles each retry (250ms, 500ms, 1s) — total added
+/// latency before giving up is ~1.75s, which comfortably covers a Fly machine
+/// cold start without making a genuinely-down service feel hung.
+const BACKOFF_START: Duration = Duration::from_millis(250);
+const BACKOFF_MAX: Duration = Duration::from_secs(2);
+
+/// Is this status worth another attempt?
+///
+/// Scoped deliberately narrowly to "the request did not get a real answer from
+/// the application":
+/// - 502/503/504 are what a proxy returns while the origin is starting, being
+///   replaced, or not yet accepting connections. On Fly, a scaled-to-zero or
+///   just-restarted machine produces exactly these.
+/// - 408/429 are the server explicitly saying "not now, come back".
+///
+/// Everything else — including every other 4xx — is a real answer and must NOT
+/// be retried. A wrong OTP is a 401; retrying it would burn the user's attempt
+/// budget and could trip rate limiting.
+fn status_is_retryable(status: http::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 429 | 502 | 503 | 504)
+}
+
+/// Is this transport error worth another attempt?
+///
+/// Connect failures and timeouts mean we never got a response, so replaying is
+/// safe and is precisely the cold-start case. A request-construction or body
+/// error will fail identically forever, so it is not retried.
+fn transport_error_is_retryable(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request()
+}
+
 #[async_trait]
 impl ButtrbaseTransport for DefaultTransport {
+    /// Execute with bounded retry + exponential backoff.
+    ///
+    /// Motivation: the API can sit behind an autostopped/scaled-to-zero Fly
+    /// machine, so the FIRST request after an idle period routinely fails to
+    /// connect or comes back 502/503 while the machine boots — the "warm-up
+    /// miss". Without retry that surfaces to the user as a hard failure (e.g.
+    /// "Failed to send code") even though a second attempt a moment later
+    /// succeeds. Retrying is handled here, in the transport, so EVERY endpoint
+    /// on the SDK benefits rather than each call site reinventing it.
+    ///
+    /// Replay safety: only requests whose body can be cloned are retried
+    /// (`try_clone` returns `None` for streaming bodies), and only on the
+    /// narrow set of conditions above where the request did not receive a real
+    /// application response.
     async fn execute(&self, req: reqwest::Request) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
+        // A streaming body cannot be replayed — one shot, same as before.
+        if req.try_clone().is_none() {
+            return self.execute_once(req).await;
+        }
+
+        let mut backoff = BACKOFF_START;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let last_attempt = attempt == MAX_ATTEMPTS;
+            let this = req
+                .try_clone()
+                .expect("replayability checked immediately above");
+
+            match self.client.execute(this).await {
+                Ok(resp) => {
+                    if last_attempt || !status_is_retryable(resp.status()) {
+                        return Self::collect(resp).await;
+                    }
+                }
+                Err(e) => {
+                    if last_attempt || !transport_error_is_retryable(&e) {
+                        return Err(Box::new(e));
+                    }
+                }
+            }
+
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(BACKOFF_MAX);
+        }
+
+        unreachable!("loop returns on the final attempt")
+    }
+}
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super::*;
+
+    /// Cold start / rollout: the proxy answers before the app is up.
+    #[test]
+    fn gateway_statuses_retry() {
+        for code in [502u16, 503, 504] {
+            assert!(
+                status_is_retryable(http::StatusCode::from_u16(code).unwrap()),
+                "{code} should be retried — it is the warm-up miss"
+            );
+        }
+    }
+
+    /// Explicit "not now".
+    #[test]
+    fn backpressure_statuses_retry() {
+        assert!(status_is_retryable(http::StatusCode::REQUEST_TIMEOUT));
+        assert!(status_is_retryable(http::StatusCode::TOO_MANY_REQUESTS));
+    }
+
+    /// The safety property. A real application answer must be returned to the
+    /// caller untouched. Retrying 401 would silently burn the user's OTP
+    /// attempts and could trip rate limiting on a simple typo.
+    #[test]
+    fn real_answers_are_never_retried() {
+        for code in [200u16, 201, 204, 400, 401, 403, 404, 409, 422, 500] {
+            assert!(
+                !status_is_retryable(http::StatusCode::from_u16(code).unwrap()),
+                "{code} is a real answer and must not be retried"
+            );
+        }
+    }
+
+    /// 500 specifically: an application panic is deterministic, so replaying it
+    /// just multiplies the damage. Called out separately because it is the one
+    /// people reflexively add to a retry list.
+    #[test]
+    fn internal_server_error_is_not_retried() {
+        assert!(!status_is_retryable(http::StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[test]
+    fn backoff_schedule_is_bounded() {
+        let mut d = BACKOFF_START;
+        let mut total = Duration::ZERO;
+        for _ in 1..MAX_ATTEMPTS {
+            total += d;
+            d = (d * 2).min(BACKOFF_MAX);
+        }
+        // 250ms + 500ms + 1s
+        assert_eq!(total, Duration::from_millis(1750));
+        assert!(total < Duration::from_secs(3), "must not feel hung");
+    }
+}
+
+impl DefaultTransport {
+    async fn execute_once(&self, req: reqwest::Request) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
         let resp = self.client.execute(req).await?;
+        Self::collect(resp).await
+    }
+
+    async fn collect(resp: reqwest::Response) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
         let status = resp.status();
         let mut builder = http::Response::builder()
             .status(status)

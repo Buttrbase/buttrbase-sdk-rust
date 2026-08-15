@@ -30,7 +30,8 @@ crate-type = ["rlib"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
-tokio = { version = "1", features = ["sync"] }
+# "time" is required by the transport retry/backoff loop (tokio::time::sleep).
+tokio = { version = "1", features = ["sync", "time"] }
 
 # Client side
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
