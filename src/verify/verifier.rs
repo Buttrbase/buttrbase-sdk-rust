@@ -3,7 +3,7 @@
 //! authenticated endpoint.
 
 use http::HeaderMap;
-use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
+use jsonwebtoken::{decode, decode_header, Algorithm, Validation};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -73,10 +73,21 @@ impl From<Claims> for AuthContext {
             .data
             .as_ref()
             .and_then(|d| d.roles.as_deref())
-            .map(|s| s.split([',', ' ']).filter(|p| !p.is_empty()).map(str::to_string).collect())
+            .map(|s| {
+                s.split([',', ' '])
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
         let email = c.data.as_ref().and_then(|d| d.email.clone());
-        Self { user_id: c.sub, org_id: c.org, scopes: c.scope, roles, email }
+        Self {
+            user_id: c.sub,
+            org_id: c.org,
+            scopes: c.scope,
+            roles,
+            email,
+        }
     }
 }
 
@@ -97,19 +108,18 @@ impl Verifier {
 
     /// Verify a bare token string. Returns full claims.
     pub async fn verify(&self, token: &str) -> Result<Claims, VerifyError> {
-        let header = decode_header(token)
-            .map_err(|e| VerifyError::BadHeader(e.to_string()))?;
+        let header = decode_header(token).map_err(|e| VerifyError::BadHeader(e.to_string()))?;
         let kid = header.kid.ok_or(VerifyError::MissingKid)?;
 
         // First try with the cached set (fetches if empty / stale).
-        self.jwks.maybe_refresh(&self.config.jwks_url, false).await?;
+        self.jwks
+            .maybe_refresh(&self.config.jwks_url, false)
+            .await?;
         let key = match self.jwks.key_for(&kid).await {
             Some(k) => k,
             None => {
                 // kid miss → one rate-limited force-refresh, then retry.
-                self.jwks
-                    .maybe_refresh(&self.config.jwks_url, true)
-                    .await?;
+                self.jwks.maybe_refresh(&self.config.jwks_url, true).await?;
                 self.jwks
                     .key_for(&kid)
                     .await
@@ -136,10 +146,7 @@ impl Verifier {
 
     /// Pull a `Bearer <token>` out of the headers, verify it, return
     /// the principal + scopes.
-    pub async fn verify_bearer(
-        &self,
-        headers: &HeaderMap,
-    ) -> Result<AuthContext, VerifyError> {
+    pub async fn verify_bearer(&self, headers: &HeaderMap) -> Result<AuthContext, VerifyError> {
         let raw = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -256,7 +263,7 @@ mod tests {
         let result = v.verify_bearer(&headers).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            VerifyError::MissingBearer => {},
+            VerifyError::MissingBearer => {}
             e => panic!("expected MissingBearer, got {:?}", e),
         }
     }
@@ -287,7 +294,7 @@ mod tests {
         let result = v.verify("not.a.jwt.at.all").await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            VerifyError::BadHeader(_) => {},
+            VerifyError::BadHeader(_) => {}
             e => panic!("expected BadHeader, got {:?}", e),
         }
     }
@@ -307,7 +314,7 @@ mod tests {
         let result = v.verify(token).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            VerifyError::MissingKid => {},
+            VerifyError::MissingKid => {}
             e => panic!("expected MissingKid, got {:?}", e),
         }
     }

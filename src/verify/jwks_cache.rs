@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use jsonwebtoken::{DecodingKey, jwk::JwkSet};
+use jsonwebtoken::{jwk::JwkSet, DecodingKey};
 use tokio::sync::RwLock;
 
 use super::error::VerifyError;
@@ -42,10 +42,7 @@ impl JwksCache {
             .await
             .map_err(|e| VerifyError::JwksFetch(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(VerifyError::JwksFetch(format!(
-                "status {}",
-                resp.status()
-            )));
+            return Err(VerifyError::JwksFetch(format!("status {}", resp.status())));
         }
         let set: JwkSet = resp
             .json()
@@ -57,11 +54,7 @@ impl JwksCache {
         Ok(())
     }
 
-    pub(crate) async fn maybe_refresh(
-        &self,
-        url: &str,
-        force: bool,
-    ) -> Result<(), VerifyError> {
+    pub(crate) async fn maybe_refresh(&self, url: &str, force: bool) -> Result<(), VerifyError> {
         let need = {
             let inner = self.inner.read().await;
             match inner.fetched_at {
@@ -181,7 +174,7 @@ mod tests {
         assert!(result.is_err());
         // Either JwksFetch or JwksParse (reqwest may fail at parse stage)
         match result.unwrap_err() {
-            VerifyError::JwksParse(_) | VerifyError::JwksFetch(_) => {},
+            VerifyError::JwksParse(_) | VerifyError::JwksFetch(_) => {}
             e => panic!("unexpected error: {:?}", e),
         }
     }

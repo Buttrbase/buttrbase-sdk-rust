@@ -741,36 +741,36 @@ pub struct OrgFeature {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct InviteAcceptRequest<'a> {
-    pub token:      &'a str,
+    pub token: &'a str,
     pub first_name: &'a str,
-    pub last_name:  &'a str,
-    pub username:   &'a str,
-    pub password:   &'a str,
+    pub last_name: &'a str,
+    pub username: &'a str,
+    pub password: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phone: Option<&'a str>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct InviteAcceptResponse {
-    pub user_uuid:     String,
-    pub org_uuid:      String,
-    pub role:          String,
-    pub access_token:  String,
+    pub user_uuid: String,
+    pub org_uuid: String,
+    pub role: String,
+    pub access_token: String,
     pub refresh_token: String,
-    pub token_type:    String,
-    pub expires_in:    i64,
-    pub message:       String,
+    pub token_type: String,
+    pub expires_in: i64,
+    pub message: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct OrgCheckResponse {
-    pub name:      String,
+    pub name: String,
     pub available: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct SuperuserResponse {
-    pub email:        String,
+    pub email: String,
     pub is_superuser: bool,
 }
 
@@ -778,26 +778,26 @@ pub struct SuperuserResponse {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct ContactRequest<'a> {
-    pub name:    &'a str,
-    pub email:   &'a str,
+    pub name: &'a str,
+    pub email: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company: Option<&'a str>,
     pub message: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_id:  Option<&'a str>,
+    pub app_id: Option<&'a str>,
 }
 
 #[derive(Serialize, Debug, Clone)]
 pub struct ContactUsRequest<'a> {
-    pub name:    &'a str,
-    pub email:   &'a str,
+    pub name: &'a str,
+    pub email: &'a str,
     pub subject: &'a str,
     pub message: &'a str,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ContactSubmitResponse {
-    pub message:      String,
+    pub message: String,
     pub reference_id: String,
 }
 
@@ -805,8 +805,8 @@ pub struct ContactSubmitResponse {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct GeoResponse {
-    pub ip:       String,
-    pub country:  String,
+    pub ip: String,
+    pub country: String,
     pub timezone: String,
 }
 
@@ -1062,8 +1062,14 @@ mod tests {
 
     #[test]
     fn test_environment_from_client_id() {
-        assert_eq!(Environment::from_client_id("bb_test_foo"), Environment::Sandbox);
-        assert_eq!(Environment::from_client_id("bb_live_foo"), Environment::Live);
+        assert_eq!(
+            Environment::from_client_id("bb_test_foo"),
+            Environment::Sandbox
+        );
+        assert_eq!(
+            Environment::from_client_id("bb_live_foo"),
+            Environment::Live
+        );
         assert_eq!(Environment::from_client_id("other"), Environment::Live);
     }
 

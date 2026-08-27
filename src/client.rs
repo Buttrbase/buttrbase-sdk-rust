@@ -32,7 +32,10 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait ButtrbaseTransport: Send + Sync {
-    async fn execute(&self, req: reqwest::Request) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn execute(
+        &self,
+        req: reqwest::Request,
+    ) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Clone)]
@@ -89,7 +92,10 @@ impl ButtrbaseTransport for DefaultTransport {
     /// (`try_clone` returns `None` for streaming bodies), and only on the
     /// narrow set of conditions above where the request did not receive a real
     /// application response.
-    async fn execute(&self, req: reqwest::Request) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn execute(
+        &self,
+        req: reqwest::Request,
+    ) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
         // A streaming body cannot be replayed — one shot, same as before.
         if req.try_clone().is_none() {
             return self.execute_once(req).await;
@@ -163,7 +169,9 @@ mod retry_policy_tests {
     /// people reflexively add to a retry list.
     #[test]
     fn internal_server_error_is_not_retried() {
-        assert!(!status_is_retryable(http::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!status_is_retryable(
+            http::StatusCode::INTERNAL_SERVER_ERROR
+        ));
     }
 
     #[test]
@@ -181,12 +189,17 @@ mod retry_policy_tests {
 }
 
 impl DefaultTransport {
-    async fn execute_once(&self, req: reqwest::Request) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn execute_once(
+        &self,
+        req: reqwest::Request,
+    ) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
         let resp = self.client.execute(req).await?;
         Self::collect(resp).await
     }
 
-    async fn collect(resp: reqwest::Response) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn collect(
+        resp: reqwest::Response,
+    ) -> Result<http::Response<bytes::Bytes>, Box<dyn std::error::Error + Send + Sync>> {
         let status = resp.status();
         let mut builder = http::Response::builder()
             .status(status)
@@ -198,7 +211,6 @@ impl DefaultTransport {
         Ok(builder.body(bytes)?)
     }
 }
-
 
 use http::HeaderMap;
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
@@ -259,7 +271,12 @@ impl ButtrBaseClient {
             Environment::Live => LIVE_BASE_URL,
             Environment::Sandbox => SANDBOX_BASE_URL,
         };
-        Self::build(client_id, Some(client_secret.into()), env, base_url.to_string())
+        Self::build(
+            client_id,
+            Some(client_secret.into()),
+            env,
+            base_url.to_string(),
+        )
     }
 
     /// Like [`new`] but overrides the base URL — useful for self-hosted
@@ -294,7 +311,9 @@ impl ButtrBaseClient {
             audience: None,
         });
 
-        let transport = std::sync::Arc::new(DefaultTransport { client: http.clone() });
+        let transport = std::sync::Arc::new(DefaultTransport {
+            client: http.clone(),
+        });
         Self {
             environment,
             client_id,
@@ -320,7 +339,7 @@ impl ButtrBaseClient {
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
-    
+
     pub fn with_transport(mut self, transport: std::sync::Arc<dyn ButtrbaseTransport>) -> Self {
         self.transport = transport;
         self
@@ -346,7 +365,9 @@ impl ButtrBaseClient {
     /// Build a request using HTTP Basic auth (client_id:client_secret).
     /// Used for app-level operations that don't require a user token.
     fn app_request(&self, method: Method, path: &str) -> RequestBuilder {
-        let req = self.http.request(method, format!("{}{}", self.base_url, path));
+        let req = self
+            .http
+            .request(method, format!("{}{}", self.base_url, path));
         if let Some(secret) = &self.client_secret {
             req.basic_auth(&self.client_id, Some(secret))
         } else {
@@ -362,14 +383,34 @@ impl ButtrBaseClient {
     }
 
     async fn send<T: DeserializeOwned>(&self, req: RequestBuilder) -> Result<T, Error> {
-        let req = req.build().map_err(|e| Error::Unexpected { status: 0, body: e.to_string() })?;
-        let resp = self.transport.execute(req).await.map_err(|e| Error::Unexpected { status: 0, body: e.to_string() })?;
+        let req = req.build().map_err(|e| Error::Unexpected {
+            status: 0,
+            body: e.to_string(),
+        })?;
+        let resp = self
+            .transport
+            .execute(req)
+            .await
+            .map_err(|e| Error::Unexpected {
+                status: 0,
+                body: e.to_string(),
+            })?;
         parse_response(resp).await
     }
 
     async fn send_empty(&self, req: RequestBuilder) -> Result<(), Error> {
-        let req = req.build().map_err(|e| Error::Unexpected { status: 0, body: e.to_string() })?;
-        let resp = self.transport.execute(req).await.map_err(|e| Error::Unexpected { status: 0, body: e.to_string() })?;
+        let req = req.build().map_err(|e| Error::Unexpected {
+            status: 0,
+            body: e.to_string(),
+        })?;
+        let resp = self
+            .transport
+            .execute(req)
+            .await
+            .map_err(|e| Error::Unexpected {
+                status: 0,
+                body: e.to_string(),
+            })?;
         let status = resp.status();
         if status.is_success() {
             return Ok(());
@@ -387,23 +428,39 @@ impl ButtrBaseClient {
     pub async fn verify_token(&self, token: &str) -> Result<Claims, Error> {
         if let Ok(header) = jsonwebtoken::decode_header(token) {
             if header.alg == jsonwebtoken::Algorithm::HS256 {
-                let req = self.app_request(Method::POST, "/api/auth/introspect")
-                    .header("X-Introspection-Key", std::env::var("INTROSPECTION_API_KEY").unwrap_or_default())
+                let req = self
+                    .app_request(Method::POST, "/api/auth/introspect")
+                    .header(
+                        "X-Introspection-Key",
+                        std::env::var("INTROSPECTION_API_KEY").unwrap_or_default(),
+                    )
                     .json(&serde_json::json!({ "token": token }));
-                
+
                 let resp: serde_json::Value = self.send(req).await?;
                 if resp.get("active").and_then(|v| v.as_bool()) != Some(true) {
-                    return Err(Error::Unexpected { status: 401, body: "token inactive".to_string() });
+                    return Err(Error::Unexpected {
+                        status: 401,
+                        body: "token inactive".to_string(),
+                    });
                 }
-                
+
                 let data = resp.get("data");
-                let user_uuid_str = data.and_then(|d| d.get("user_uuid")).and_then(|v| v.as_str()).unwrap_or_default();
-                let org_uuid_str = data.and_then(|d| d.get("org_uuid")).and_then(|v| v.as_str()).unwrap_or_default();
+                let user_uuid_str = data
+                    .and_then(|d| d.get("user_uuid"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let org_uuid_str = data
+                    .and_then(|d| d.get("org_uuid"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 let user_uuid = Uuid::parse_str(user_uuid_str).unwrap_or_default();
                 let org_uuid = Uuid::parse_str(org_uuid_str).unwrap_or_default();
                 let exp = resp.get("exp").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let roles = data.and_then(|d| d.get("roles")).and_then(|v| v.as_str()).map(|s| s.to_string());
-                
+                let roles = data
+                    .and_then(|d| d.get("roles"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 return Ok(Claims {
                     sub: user_uuid,
                     org: org_uuid,
@@ -429,7 +486,10 @@ impl ButtrBaseClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         if !auth.starts_with("Bearer ") {
-            return Err(Error::Unexpected { status: 401, body: "missing bearer".into() });
+            return Err(Error::Unexpected {
+                status: 401,
+                body: "missing bearer".into(),
+            });
         }
         let token = &auth[7..];
         let claims = self.verify_token(token).await?;
@@ -768,13 +828,10 @@ impl ButtrBaseClient {
     /// Preview an invitation by its token (public — no auth required).
     /// Used to show "you've been invited to join Acme Inc" before signup.
     pub async fn preview_invitation(&self, token: &str) -> Result<InvitationPreview, Error> {
-        self.send(
-            self.http
-                .request(
-                    Method::GET,
-                    format!("{}/api/auth/invitations/{}", self.base_url, token),
-                ),
-        )
+        self.send(self.http.request(
+            Method::GET,
+            format!("{}/api/auth/invitations/{}", self.base_url, token),
+        ))
         .await
     }
 
@@ -786,13 +843,11 @@ impl ButtrBaseClient {
         bearer: &str,
         token: &str,
     ) -> Result<AcceptInvitationResponse, Error> {
-        self.send(
-            self.user_request(
-                Method::POST,
-                &format!("/api/auth/invitations/{}/accept", token),
-                bearer,
-            ),
-        )
+        self.send(self.user_request(
+            Method::POST,
+            &format!("/api/auth/invitations/{}/accept", token),
+            bearer,
+        ))
         .await
     }
 
@@ -930,12 +985,8 @@ impl ButtrBaseClient {
         self.attach_app_uuid(&mut body);
         let resp: EntitlementBatchResponseData = self
             .send(
-                self.user_request(
-                    Method::POST,
-                    "/api/entitlements/check/batch",
-                    bearer,
-                )
-                .json(&body),
+                self.user_request(Method::POST, "/api/entitlements/check/batch", bearer)
+                    .json(&body),
             )
             .await?;
         Ok(resp.data)
@@ -947,11 +998,7 @@ impl ButtrBaseClient {
         bearer: &str,
     ) -> Result<Vec<EffectiveEntitlement>, Error> {
         let resp: DataWrapper<Vec<EffectiveEntitlement>> = self
-            .send(self.user_request(
-                Method::GET,
-                "/api/entitlements/effective",
-                bearer,
-            ))
+            .send(self.user_request(Method::GET, "/api/entitlements/effective", bearer))
             .await?;
         Ok(resp.data)
     }
@@ -998,12 +1045,8 @@ impl ButtrBaseClient {
     ) -> Result<CheckoutSession, Error> {
         let resp: DataWrapper<CheckoutSession> = self
             .send(
-                self.user_request(
-                    Method::POST,
-                    "/api/pricing/checkout-session",
-                    bearer,
-                )
-                .json(req),
+                self.user_request(Method::POST, "/api/pricing/checkout-session", bearer)
+                    .json(req),
             )
             .await?;
         Ok(resp.data)
@@ -1013,9 +1056,9 @@ impl ButtrBaseClient {
 
     /// Get the user's wallet balance and budget.
     pub async fn wallet(&self, bearer: &str) -> Result<WalletSummary, Error> {
-        let resp: DataWrapper<WalletSummary> =
-            self.send(self.user_request(Method::GET, "/api/wallet", bearer))
-                .await?;
+        let resp: DataWrapper<WalletSummary> = self
+            .send(self.user_request(Method::GET, "/api/wallet", bearer))
+            .await?;
         Ok(resp.data)
     }
 
@@ -1026,13 +1069,10 @@ impl ButtrBaseClient {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<WalletTransaction>, Error> {
-        let path = format!(
-            "/api/wallet/transactions?limit={}&offset={}",
-            limit, offset
-        );
-        let resp: DataWrapper<Vec<WalletTransaction>> =
-            self.send(self.user_request(Method::GET, &path, bearer))
-                .await?;
+        let path = format!("/api/wallet/transactions?limit={}&offset={}", limit, offset);
+        let resp: DataWrapper<Vec<WalletTransaction>> = self
+            .send(self.user_request(Method::GET, &path, bearer))
+            .await?;
         Ok(resp.data)
     }
 
@@ -1109,11 +1149,7 @@ impl ButtrBaseClient {
     // ── Analytics ─────────────────────────────────────────────────────────
 
     /// Ingest an analytics event on behalf of a user.
-    pub async fn ingest_event(
-        &self,
-        bearer: &str,
-        event: &AnalyticsEvent,
-    ) -> Result<(), Error> {
+    pub async fn ingest_event(&self, bearer: &str, event: &AnalyticsEvent) -> Result<(), Error> {
         self.send_empty(
             self.user_request(Method::POST, "/api/analytics/events", bearer)
                 .json(event),
@@ -1147,20 +1183,16 @@ impl ButtrBaseClient {
             "/api/analytics/organizations/{}/overview?period={}",
             org_uuid, period
         );
-        let resp: DataWrapper<serde_json::Value> =
-            self.send(self.user_request(Method::GET, &path, bearer))
-                .await?;
+        let resp: DataWrapper<serde_json::Value> = self
+            .send(self.user_request(Method::GET, &path, bearer))
+            .await?;
         Ok(resp.data)
     }
 
     // ── Teams ─────────────────────────────────────────────────────────────
 
     /// List active teams in an org.
-    pub async fn org_teams(
-        &self,
-        bearer: &str,
-        org_uuid: &str,
-    ) -> Result<Vec<TeamItem>, Error> {
+    pub async fn org_teams(&self, bearer: &str, org_uuid: &str) -> Result<Vec<TeamItem>, Error> {
         let resp: DataWrapper<Vec<TeamItem>> = self
             .send(self.user_request(
                 Method::GET,
@@ -1172,11 +1204,7 @@ impl ButtrBaseClient {
     }
 
     /// List teams a user is a member of.
-    pub async fn user_teams(
-        &self,
-        bearer: &str,
-        user_uuid: &str,
-    ) -> Result<Vec<TeamItem>, Error> {
+    pub async fn user_teams(&self, bearer: &str, user_uuid: &str) -> Result<Vec<TeamItem>, Error> {
         let resp: DataWrapper<Vec<TeamItem>> = self
             .send(self.user_request(
                 Method::GET,
@@ -1198,11 +1226,7 @@ impl ButtrBaseClient {
     }
 
     /// List orgs within an app that the user belongs to.
-    pub async fn app_orgs(
-        &self,
-        bearer: &str,
-        app_uuid: &str,
-    ) -> Result<Vec<OrgEntry>, Error> {
+    pub async fn app_orgs(&self, bearer: &str, app_uuid: &str) -> Result<Vec<OrgEntry>, Error> {
         let resp: DataWrapper<Vec<OrgEntry>> = self
             .send(self.user_request(
                 Method::GET,
@@ -1249,10 +1273,7 @@ impl ButtrBaseClient {
         let resp: DataWrapper<serde_json::Value> = self
             .send(self.user_request(
                 Method::POST,
-                &format!(
-                    "/api/apps/{}/credentials/{}/rotate",
-                    app_uuid, environment
-                ),
+                &format!("/api/apps/{}/credentials/{}/rotate", app_uuid, environment),
                 bearer,
             ))
             .await?;
@@ -1335,10 +1356,9 @@ impl ButtrBaseClient {
 
     /// Delete a webhook by its integer ID. Returns `()` on success (HTTP 204).
     pub async fn delete_webhook(&self, webhook_id: i32) -> Result<(), Error> {
-        self.send_empty(self.app_request(
-            Method::DELETE,
-            &format!("/api/v1/webhooks/{}", webhook_id),
-        ))
+        self.send_empty(
+            self.app_request(Method::DELETE, &format!("/api/v1/webhooks/{}", webhook_id)),
+        )
         .await
     }
 
@@ -1483,10 +1503,7 @@ impl ButtrBaseClient {
                     .or_else(|| raw_resp.get("token"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                return Ok(LoginResponse {
-                    access_token,
-                    user,
-                });
+                return Ok(LoginResponse { access_token, user });
             }
         }
 
@@ -1533,11 +1550,8 @@ impl ButtrBaseClient {
             .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
             .collect::<Vec<_>>()
             .join("&");
-        self.send(self.app_request(
-            Method::GET,
-            &format!("/api/auth/oidc/callback?{}", qs),
-        ))
-        .await
+        self.send(self.app_request(Method::GET, &format!("/api/auth/oidc/callback?{}", qs)))
+            .await
     }
 
     /// Begin SAML authorize flow (backward compatibility).
@@ -1557,10 +1571,10 @@ impl ButtrBaseClient {
         &self,
         payload: &serde_json::Value,
     ) -> Result<serde_json::Value, Error> {
-        self.send(self.app_request(
-            Method::POST,
-            "/api/auth/saml/callback"
-        ).json(payload))
+        self.send(
+            self.app_request(Method::POST, "/api/auth/saml/callback")
+                .json(payload),
+        )
         .await
     }
 
@@ -1573,10 +1587,7 @@ impl ButtrBaseClient {
     }
 
     /// Get teams in an organization (admin / backward compatibility).
-    pub async fn get_org_teams(
-        &self,
-        org_uuid: &str,
-    ) -> Result<Vec<TeamItem>, Error> {
+    pub async fn get_org_teams(&self, org_uuid: &str) -> Result<Vec<TeamItem>, Error> {
         let resp: DataWrapper<Vec<TeamItem>> = self
             .send(self.app_request(
                 Method::GET,
@@ -1592,10 +1603,7 @@ impl ButtrBaseClient {
         team_uuid: &str,
     ) -> Result<Vec<serde_json::Value>, Error> {
         let resp: DataWrapper<Vec<serde_json::Value>> = self
-            .send(self.app_request(
-                Method::GET,
-                &format!("/api/teams/{}/members", team_uuid),
-            ))
+            .send(self.app_request(Method::GET, &format!("/api/teams/{}/members", team_uuid)))
             .await?;
         Ok(resp.data)
     }
@@ -1606,7 +1614,10 @@ impl ButtrBaseClient {
         data: &EntitlementCheckRequest<'_>,
     ) -> Result<EntitlementCheckResponseLegacy, Error> {
         let resp: DataWrapper<EntitlementCheckResponseLegacy> = self
-            .send(self.app_request(Method::POST, "/api/entitlements/check").json(data))
+            .send(
+                self.app_request(Method::POST, "/api/entitlements/check")
+                    .json(data),
+            )
             .await?;
         Ok(resp.data)
     }
@@ -1633,12 +1644,7 @@ impl ButtrBaseClient {
     ///
     /// Hits `POST /api/admin/sessions/revoke` with the caller's **user** bearer
     /// (admin / elevated actor). Body: `{ "jti", "ttl_seconds" }`.
-    pub async fn revoke_jti(
-        &self,
-        bearer: &str,
-        jti: &str,
-        ttl_seconds: i64,
-    ) -> Result<(), Error> {
+    pub async fn revoke_jti(&self, bearer: &str, jti: &str, ttl_seconds: i64) -> Result<(), Error> {
         let jti = jti.trim();
         if jti.is_empty() {
             return Err(Error::Unexpected {
@@ -1721,14 +1727,16 @@ impl ButtrBaseClient {
 
 // ── Response parsing helpers ──────────────────────────────────────────────
 
-async fn parse_response<T: DeserializeOwned>(resp: http::Response<bytes::Bytes>) -> Result<T, Error> {
+async fn parse_response<T: DeserializeOwned>(
+    resp: http::Response<bytes::Bytes>,
+) -> Result<T, Error> {
     let status = resp.status();
     if status.is_success() {
         let bytes = resp.into_body();
         serde_json::from_slice(&bytes).map_err(|e| {
             // Preserve the raw body in the error message for debugging.
-            let preview: String = String::from_utf8_lossy(&bytes[..bytes.len().min(200)])
-                .into_owned();
+            let preview: String =
+                String::from_utf8_lossy(&bytes[..bytes.len().min(200)]).into_owned();
             Error::Unexpected {
                 status: status.as_u16(),
                 body: format!("deserialise error: {e} — body: {preview}"),
@@ -1763,7 +1771,6 @@ fn parse_error_body(status: StatusCode, body: &str) -> Error {
         body: body.to_string(),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1836,12 +1843,18 @@ mod tests {
 
     #[test]
     fn test_environment_from_client_id_sandbox() {
-        assert_eq!(Environment::from_client_id("bb_test_foo"), Environment::Sandbox);
+        assert_eq!(
+            Environment::from_client_id("bb_test_foo"),
+            Environment::Sandbox
+        );
     }
 
     #[test]
     fn test_environment_from_client_id_live() {
-        assert_eq!(Environment::from_client_id("bb_live_foo"), Environment::Live);
+        assert_eq!(
+            Environment::from_client_id("bb_live_foo"),
+            Environment::Live
+        );
         assert_eq!(Environment::from_client_id("other"), Environment::Live);
     }
 
@@ -1909,7 +1922,11 @@ mod tests {
         let result = client.send_otp("bad", uuid::Uuid::nil()).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::Api { status, message, code } => {
+            Error::Api {
+                status,
+                message,
+                code,
+            } => {
                 assert_eq!(status, 400);
                 assert_eq!(message, "Invalid email");
                 assert_eq!(code, Some("BAD_EMAIL".to_string()));
@@ -1932,7 +1949,10 @@ mod tests {
             }));
         });
         let client = make_client(&server);
-        let pair = client.verify_otp("u@e.com", "123456", uuid::Uuid::nil()).await.unwrap();
+        let pair = client
+            .verify_otp("u@e.com", "123456", uuid::Uuid::nil())
+            .await
+            .unwrap();
         assert_eq!(pair.token, "signup_token_jwt");
     }
 
@@ -1947,7 +1967,10 @@ mod tests {
             then.status(200).body("{}");
         });
         let client = make_client(&server);
-        client.send_otp_legacy(1, "myapp", "u@e.com", "org-uuid", "myorg").await.unwrap();
+        client
+            .send_otp_legacy(1, "myapp", "u@e.com", "org-uuid", "myorg")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1963,7 +1986,10 @@ mod tests {
             }));
         });
         let client = make_client(&server);
-        let pair = client.verify_otp_legacy(1, "myapp", "u@e.com", "123456", "o-uuid", "myorg").await.unwrap();
+        let pair = client
+            .verify_otp_legacy(1, "myapp", "u@e.com", "123456", "o-uuid", "myorg")
+            .await
+            .unwrap();
         assert_eq!(pair.token, "access_jwt");
         assert_eq!(pair.refresh_token, Some("refresh_jwt".to_string()));
     }
@@ -2109,7 +2135,8 @@ mod tests {
                 two-org test tenancy + a freshly-minted real OTP; see the \
                 doc comment directly above this test section for exact setup"]
     async fn verify_otp_with_org_same_org_user_authenticates() {
-        let client_id = std::env::var("BUTTRBASE_TEST_CLIENT_ID").expect("BUTTRBASE_TEST_CLIENT_ID");
+        let client_id =
+            std::env::var("BUTTRBASE_TEST_CLIENT_ID").expect("BUTTRBASE_TEST_CLIENT_ID");
         let client_secret =
             std::env::var("BUTTRBASE_TEST_CLIENT_SECRET").expect("BUTTRBASE_TEST_CLIENT_SECRET");
         let base_url = std::env::var("BUTTRBASE_TEST_URL").expect("BUTTRBASE_TEST_URL");
@@ -2127,7 +2154,9 @@ mod tests {
         // Legitimate, authorized access: the real user IS a member of org A.
         // Proving this succeeds matters as much as proving org B is refused —
         // a fix that blocks everything trivially "passes" an attack-only test.
-        let result = bb.verify_otp_with_org(&email, &otp, app_uuid, Some(&org_a)).await;
+        let result = bb
+            .verify_otp_with_org(&email, &otp, app_uuid, Some(&org_a))
+            .await;
         assert!(
             result.is_ok(),
             "same-org user must authenticate, got: {result:?}"
@@ -2140,7 +2169,8 @@ mod tests {
                 doc comment above verify_otp_with_org_same_org_user_authenticates \
                 for exact setup"]
     async fn verify_otp_with_org_cross_org_user_is_refused() {
-        let client_id = std::env::var("BUTTRBASE_TEST_CLIENT_ID").expect("BUTTRBASE_TEST_CLIENT_ID");
+        let client_id =
+            std::env::var("BUTTRBASE_TEST_CLIENT_ID").expect("BUTTRBASE_TEST_CLIENT_ID");
         let client_secret =
             std::env::var("BUTTRBASE_TEST_CLIENT_SECRET").expect("BUTTRBASE_TEST_CLIENT_SECRET");
         let base_url = std::env::var("BUTTRBASE_TEST_URL").expect("BUTTRBASE_TEST_URL");
@@ -2159,7 +2189,9 @@ mod tests {
         // only the org differs, and this user has NO `orgusers` row in
         // org B. Must be refused, not silently authenticated into the
         // wrong organization's data.
-        let result = bb.verify_otp_with_org(&email, &otp, app_uuid, Some(&org_b)).await;
+        let result = bb
+            .verify_otp_with_org(&email, &otp, app_uuid, Some(&org_b))
+            .await;
         assert!(
             result.is_err(),
             "cross-org user must be REFUSED, not authenticated; got: {result:?}"
@@ -2259,7 +2291,9 @@ mod tests {
             password: "s3cur3!",
             app_uuid: uuid::Uuid::nil(),
             signup_token: "signup_tok",
-            org_choice: crate::models::OrgChoice::AcceptInvite { invitation_token: "Bd9abc" },
+            org_choice: crate::models::OrgChoice::AcceptInvite {
+                invitation_token: "Bd9abc",
+            },
             first_name: None,
             last_name: None,
         };
@@ -2357,7 +2391,8 @@ mod tests {
     async fn test_accept_invitation() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST).path("/api/auth/invitations/Bd9abc/accept");
+            when.method(POST)
+                .path("/api/auth/invitations/Bd9abc/accept");
             then.status(200).json_body(json!({
                 "org_uuid": "00000000-0000-0000-0000-000000000001",
                 "org_name": "Acme Inc",
@@ -2365,7 +2400,10 @@ mod tests {
             }));
         });
         let client = make_client(&server);
-        let resp = client.accept_invitation("user_tok", "Bd9abc").await.unwrap();
+        let resp = client
+            .accept_invitation("user_tok", "Bd9abc")
+            .await
+            .unwrap();
         assert_eq!(resp.org_name, "Acme Inc");
         assert_eq!(resp.role, "member");
     }
@@ -2429,10 +2467,14 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/api/auth/magic-link/send");
-            then.status(200).json_body(json!({"sent": true, "expires_in_seconds": 900}));
+            then.status(200)
+                .json_body(json!({"sent": true, "expires_in_seconds": 900}));
         });
         let client = make_client(&server);
-        let result = client.send_magic_link("u@e.com", uuid::Uuid::nil(), Some("myapp")).await.unwrap();
+        let result = client
+            .send_magic_link("u@e.com", uuid::Uuid::nil(), Some("myapp"))
+            .await
+            .unwrap();
         assert!(result.sent);
     }
 
@@ -2459,10 +2501,14 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/api/entitlements/check");
-            then.status(200).json_body(wrap_data(json!({"granted": true, "reason": null})));
+            then.status(200)
+                .json_body(wrap_data(json!({"granted": true, "reason": null})));
         });
         let client = make_client(&server);
-        let result = client.check_entitlement("user_token", "advanced_analytics").await.unwrap();
+        let result = client
+            .check_entitlement("user_token", "advanced_analytics")
+            .await
+            .unwrap();
         assert!(result.granted);
         assert!(result.reason.is_none());
     }
@@ -2472,10 +2518,14 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/api/entitlements/check");
-            then.status(200).json_body(wrap_data(json!({"granted": false, "reason": "plan_limit"})));
+            then.status(200)
+                .json_body(wrap_data(json!({"granted": false, "reason": "plan_limit"})));
         });
         let client = make_client(&server);
-        let result = client.check_entitlement("user_token", "feature_x").await.unwrap();
+        let result = client
+            .check_entitlement("user_token", "feature_x")
+            .await
+            .unwrap();
         assert!(!result.granted);
         assert_eq!(result.reason, Some("plan_limit".to_string()));
     }
@@ -2493,7 +2543,10 @@ mod tests {
             })));
         });
         let client = make_client(&server);
-        let map = client.check_entitlements("tok", &["feature_a", "feature_b"]).await.unwrap();
+        let map = client
+            .check_entitlements("tok", &["feature_a", "feature_b"])
+            .await
+            .unwrap();
         assert!(map["feature_a"].granted);
         assert!(!map["feature_b"].granted);
     }
@@ -2552,7 +2605,9 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(POST).path("/api/pricing/quote");
-            then.status(200).json_body(wrap_data(json!({"quote_id": "q-1", "expires_at": "2024-12-31"})));
+            then.status(200).json_body(wrap_data(
+                json!({"quote_id": "q-1", "expires_at": "2024-12-31"}),
+            ));
         });
         let client = make_client(&server);
         let req = crate::models::PricingPreviewRequest {
@@ -2623,7 +2678,8 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(POST).path("/api/admin/sessions/revoke");
-            then.status(201).json_body(json!({ "data": { "jti": "x" } }));
+            then.status(201)
+                .json_body(json!({ "data": { "jti": "x" } }));
         });
         let client = make_client(&server);
         let (ok, err) = client
@@ -2822,8 +2878,10 @@ mod tests {
     async fn test_app_analytics_overview() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(GET).path_contains("/api/analytics/apps/app-1/overview");
-            then.status(200).json_body(wrap_data(json!({"users": 100, "events": 500})));
+            when.method(GET)
+                .path_contains("/api/analytics/apps/app-1/overview");
+            then.status(200)
+                .json_body(wrap_data(json!({"users": 100, "events": 500})));
         });
         let client = make_client(&server);
         let result = client.app_analytics_overview("app-1", "7d").await.unwrap();
@@ -2834,11 +2892,16 @@ mod tests {
     async fn test_org_analytics_overview() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(GET).path_contains("/api/analytics/organizations/org-1/overview");
-            then.status(200).json_body(wrap_data(json!({"active_users": 50})));
+            when.method(GET)
+                .path_contains("/api/analytics/organizations/org-1/overview");
+            then.status(200)
+                .json_body(wrap_data(json!({"active_users": 50})));
         });
         let client = make_client(&server);
-        let result = client.org_analytics_overview("tok", "org-1", "30d").await.unwrap();
+        let result = client
+            .org_analytics_overview("tok", "org-1", "30d")
+            .await
+            .unwrap();
         assert_eq!(result["active_users"], 50);
     }
 
@@ -2955,14 +3018,18 @@ mod tests {
     async fn test_rotate_credentials() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST).path("/api/apps/app-uuid-1/credentials/live/rotate");
+            when.method(POST)
+                .path("/api/apps/app-uuid-1/credentials/live/rotate");
             then.status(200).json_body(wrap_data(json!({
                 "client_id": "bb_live_cid_new",
                 "client_secret": "bb_live_sk_new"
             })));
         });
         let client = make_live_client(&server);
-        let result = client.rotate_credentials("tok", "app-uuid-1", "live").await.unwrap();
+        let result = client
+            .rotate_credentials("tok", "app-uuid-1", "live")
+            .await
+            .unwrap();
         assert_eq!(result["client_id"], "bb_live_cid_new");
     }
 
@@ -3016,14 +3083,15 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/wallet");
-            then.status(403)
-                .json_body(json!({"message": "Forbidden"}));
+            then.status(403).json_body(json!({"message": "Forbidden"}));
         });
         let client = make_client(&server);
         let result = client.wallet("tok").await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::Api { message, status, .. } => {
+            Error::Api {
+                message, status, ..
+            } => {
                 assert_eq!(status, 403);
                 assert_eq!(message, "Forbidden");
             }

@@ -17,7 +17,8 @@ impl FormatNegotiator {
     }
 
     pub fn is_binary(headers: &HeaderMap) -> bool {
-        headers.get("content-type")
+        headers
+            .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.contains("application/x-flatbuffers"))
             .unwrap_or(false)
