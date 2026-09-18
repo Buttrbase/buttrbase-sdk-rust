@@ -461,12 +461,22 @@ impl ButtrBaseClient {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
+                // Carry the app binding through if the response includes it, so
+                // a verifier configured with `with_expected_app_uuid` can still
+                // enforce it on this path. Absent means None, which a pinned
+                // verifier rejects rather than treats as any-app.
+                let app_uuid = resp
+                    .get("app_uuid")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok());
+
                 return Ok(Claims {
                     sub: user_uuid,
                     org: org_uuid,
                     exp,
                     iat: 0,
                     scope: vec![],
+                    app_uuid,
                     data: Some(crate::verify::ClaimsData {
                         roles,
                         email: None,

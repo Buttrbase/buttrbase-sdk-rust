@@ -50,6 +50,26 @@ pub struct Claims {
     pub iat: usize,
     #[serde(default)]
     pub scope: Vec<String>,
+    /// The buttrbase **app** this token was minted for, promoted to a
+    /// top-level claim by `app_auth.rs` so a JWKS verifier can read it.
+    ///
+    /// Read this — or better, set [`Verifier::with_expected_app_uuid`] and let
+    /// the verifier enforce it. The issuer, the JWKS endpoint and `aud`
+    /// (`BUTTRBASE_TOKEN_AUDIENCE`, default `"s7-platform"`) are identical for
+    /// every app on the platform, so signature + issuer + audience proves the
+    /// token came from *buttrbase*, not that it came from buttrbase *for your
+    /// app*. `app_auth.rs` records this happening for real:
+    ///
+    /// > "An access token minted for one product therefore verifies perfectly
+    /// > at another product's API, which is not a hypothetical — an Affordable
+    /// > Reasoning token authenticated against the Get Airtight API and got as
+    /// > far as business-rule validation."
+    ///
+    /// `None` for tokens minted before the claim was promoted. Treating `None`
+    /// as "any app" is what makes the hole exploitable, so
+    /// `with_expected_app_uuid` rejects it.
+    #[serde(default)]
+    pub app_uuid: Option<Uuid>,
     #[serde(default)]
     pub data: Option<ClaimsData>,
 }
@@ -96,6 +116,9 @@ impl From<Claims> for AuthContext {
 pub struct Verifier {
     config: VerifierConfig,
     jwks: JwksCache,
+    /// Opt-in. `None` preserves the historical behaviour of not checking which
+    /// app a token was minted for; see [`Verifier::with_expected_app_uuid`].
+    expected_app_uuid: Option<Uuid>,
 }
 
 impl Verifier {
@@ -103,7 +126,31 @@ impl Verifier {
         Self {
             config,
             jwks: JwksCache::new(),
+            expected_app_uuid: None,
         }
+    }
+
+    /// Require that tokens were minted for this buttrbase app.
+    ///
+    /// **You almost certainly want this.** Without it, a valid token minted for
+    /// *any* app on the platform authenticates against your API, because the
+    /// issuer, JWKS and `aud` are platform-wide rather than per-app. See the
+    /// note on [`Claims::app_uuid`].
+    ///
+    /// A builder method rather than a `VerifierConfig` field so that adding it
+    /// does not break existing `VerifierConfig { .. }` literals.
+    ///
+    /// Enforcement rejects both a mismatched `app_uuid` and a **missing** one —
+    /// reading absence as "any app" is exactly the hole this closes. If you
+    /// serve tokens minted before the claim was promoted, migrate them first.
+    pub fn with_expected_app_uuid(mut self, app_uuid: Uuid) -> Self {
+        self.expected_app_uuid = Some(app_uuid);
+        self
+    }
+
+    /// The app uuid this verifier is pinned to, for diagnostics endpoints.
+    pub fn expected_app_uuid(&self) -> Option<Uuid> {
+        self.expected_app_uuid
     }
 
     /// Verify a bare token string. Returns full claims.
@@ -141,6 +188,13 @@ impl Verifier {
 
         let data = decode::<Claims>(token, &key, &validation)
             .map_err(|e| VerifyError::InvalidToken(e.to_string()))?;
+
+        // Signature, issuer, expiry and nbf are all validated above. This is the
+        // separate question they cannot answer: was the token minted for *this*
+        // app? The issuer and JWKS are platform-wide, so a cryptographically
+        // valid token for another product passes every check above.
+        assert_app_uuid(&data.claims, self.expected_app_uuid)?;
+
         Ok(data.claims)
     }
 
@@ -168,6 +222,30 @@ impl Verifier {
     }
 }
 
+/// Enforce the app binding. Split out of [`Verifier::verify`] so it can be
+/// unit-tested without a JWKS endpoint and a signed token.
+///
+/// Reports through `VerifyError::InvalidToken` rather than new variants on
+/// purpose: consumers match `VerifyError` exhaustively (metaphone's
+/// `From<VerifyError> for AppError` has no wildcard arm), so adding variants
+/// would be a breaking change for every dependent crate. The message carries
+/// the detail for logs, and 401 is the correct response for both cases anyway.
+fn assert_app_uuid(claims: &Claims, expected: Option<Uuid>) -> Result<(), VerifyError> {
+    let Some(expected) = expected else {
+        // Not pinned: preserve the historical behaviour.
+        return Ok(());
+    };
+    match claims.app_uuid {
+        None => Err(VerifyError::InvalidToken(
+            "token carries no app_uuid claim; refusing to treat its absence as any-app".to_string(),
+        )),
+        Some(found) if found != expected => Err(VerifyError::InvalidToken(format!(
+            "token was minted for app {found}, expected {expected}"
+        ))),
+        Some(_) => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +259,7 @@ mod tests {
             iat: 0,
             scope: vec!["read:pages".into()],
             data: None,
+            app_uuid: None,
         };
         let auth: AuthContext = c.into();
         assert_eq!(auth.scopes, vec!["read:pages".to_string()]);
@@ -211,6 +290,7 @@ mod tests {
             iat: 500,
             scope: vec!["admin".to_string()],
             data: None,
+            app_uuid: None,
         };
         let auth: AuthContext = c.into();
         assert_eq!(auth.user_id, uid);
@@ -352,5 +432,105 @@ mod tests {
         let auth: AuthContext = claims.into();
         assert!(auth.roles.contains(&"owner".to_string()));
         assert_eq!(auth.email.as_deref(), Some("test@example.com"));
+    }
+    // ── app_uuid binding ────────────────────────────────────────────────────
+    //
+    // The issuer, JWKS endpoint and `aud` are platform-wide, so signature +
+    // issuer + expiry prove a token came from buttrbase, not that it came from
+    // buttrbase *for this app*. These tests cover the check that closes that
+    // gap. `app_auth.rs` in buttrbase-backend-rust records it happening for
+    // real: an Affordable Reasoning token authenticated against the Get
+    // Airtight API.
+
+    const OUR_APP: &str = "11111111-1111-1111-1111-111111111111";
+    const OTHER_APP: &str = "22222222-2222-2222-2222-222222222222";
+
+    fn claims_with_app(app_uuid: Option<Uuid>) -> Claims {
+        Claims {
+            sub: Uuid::nil(),
+            org: Uuid::nil(),
+            exp: 0,
+            iat: 0,
+            scope: Vec::new(),
+            app_uuid,
+            data: None,
+        }
+    }
+
+    #[test]
+    fn app_uuid_is_not_checked_when_unconfigured() {
+        // Backwards compatibility: every existing consumer builds
+        // Verifier::new(config) with no expectation and must keep verifying.
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        let other = Uuid::parse_str(OTHER_APP).unwrap();
+        assert!(assert_app_uuid(&claims_with_app(None), None).is_ok());
+        assert!(assert_app_uuid(&claims_with_app(Some(other)), None).is_ok());
+        assert!(assert_app_uuid(&claims_with_app(Some(ours)), None).is_ok());
+    }
+
+    #[test]
+    fn matching_app_uuid_is_accepted() {
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        assert!(assert_app_uuid(&claims_with_app(Some(ours)), Some(ours)).is_ok());
+    }
+
+    #[test]
+    fn token_minted_for_another_app_is_rejected() {
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        let other = Uuid::parse_str(OTHER_APP).unwrap();
+        let err = assert_app_uuid(&claims_with_app(Some(other)), Some(ours))
+            .expect_err("cross-app token must be rejected");
+        let msg = err.to_string();
+        // Both uuids appear, so an operator can tell which app leaked.
+        assert!(msg.contains(OTHER_APP), "{msg}");
+        assert!(msg.contains(OUR_APP), "{msg}");
+        assert!(matches!(err, VerifyError::InvalidToken(_)));
+    }
+
+    #[test]
+    fn missing_app_uuid_is_rejected_when_pinned() {
+        // The important one: absence must not be read as "any app", or a token
+        // minted before the claim was promoted becomes a universal pass.
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        let err = assert_app_uuid(&claims_with_app(None), Some(ours))
+            .expect_err("missing app_uuid must be rejected");
+        assert!(err.to_string().contains("no app_uuid"), "{err}");
+    }
+
+    #[test]
+    fn app_uuid_deserializes_from_the_top_level_claim() {
+        // buttrbase stamps it with json!(app_uuid), i.e. a bare UUID string at
+        // the top level -- not nested under `data`.
+        let json = format!(
+            r#"{{"sub":"{OUR_APP}","org":"{OUR_APP}","exp":0,"iat":0,"app_uuid":"{OTHER_APP}"}}"#
+        );
+        let claims: Claims = serde_json::from_str(&json).unwrap();
+        assert_eq!(claims.app_uuid, Some(Uuid::parse_str(OTHER_APP).unwrap()));
+    }
+
+    #[test]
+    fn app_uuid_absent_deserializes_to_none() {
+        // Tokens minted before the claim was promoted must still parse, so that
+        // pinning produces a clear rejection rather than a deserialize error.
+        let json = format!(r#"{{"sub":"{OUR_APP}","org":"{OUR_APP}","exp":0,"iat":0}}"#);
+        let claims: Claims = serde_json::from_str(&json).unwrap();
+        assert_eq!(claims.app_uuid, None);
+    }
+
+    #[test]
+    fn with_expected_app_uuid_is_recorded() {
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        let config = VerifierConfig {
+            jwks_url: "https://example.invalid/jwks".to_string(),
+            issuer: "https://example.invalid".to_string(),
+            audience: None,
+        };
+        assert_eq!(Verifier::new(config.clone()).expected_app_uuid(), None);
+        assert_eq!(
+            Verifier::new(config)
+                .with_expected_app_uuid(ours)
+                .expected_app_uuid(),
+            Some(ours)
+        );
     }
 }
