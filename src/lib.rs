@@ -40,6 +40,7 @@ pub mod error;
 pub mod models;
 pub mod verify;
 
+#[cfg(test)]
 mod negotiator;
 
 // Convenience re-exports at the crate root.

@@ -915,18 +915,12 @@ pub struct AuditLogQuery {
 
 // ── Passkeys (WebAuthn) ─────────────────────────────────────────────────────
 //
-// The backend wraps passkey responses in `{data: ...}` (the
-// `DataEnvelope<T>` shape). The SDK methods unwrap this for ergonomics.
+// The backend wraps passkey responses in `{data: ...}`.
+// The SDK methods unwrap this for ergonomics.
 //
 // The WebAuthn challenge / credential blobs are pass-through `serde_json::Value`
 // — we deliberately don't pull in `webauthn-rs` as a dep; consumers either
 // hand the JSON to a browser via WASM or to a native authenticator helper.
-
-/// Internal envelope used to unwrap the backend's `{data: ...}` shape.
-#[derive(Deserialize, Debug, Clone)]
-pub(crate) struct DataEnvelope<T> {
-    pub data: T,
-}
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct PasskeyRegistrationChallenge {

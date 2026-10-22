@@ -213,7 +213,7 @@ impl DefaultTransport {
 }
 
 use http::HeaderMap;
-use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
+use reqwest::{Client, Method, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use uuid::Uuid;
