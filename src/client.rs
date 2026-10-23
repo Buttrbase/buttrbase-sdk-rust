@@ -477,6 +477,8 @@ impl ButtrBaseClient {
                     iat: 0,
                     scope: vec![],
                     app_uuid,
+                    // The sandbox status response is not a verified JWT.
+                    act: None,
                     data: Some(crate::verify::ClaimsData {
                         roles,
                         email: None,

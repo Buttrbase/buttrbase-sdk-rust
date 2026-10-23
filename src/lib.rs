@@ -47,4 +47,4 @@ mod negotiator;
 pub use client::ButtrBaseClient;
 pub use error::Error;
 pub use models::Environment;
-pub use verify::{AuthContext, Claims, Verifier, VerifierConfig, VerifyError};
+pub use verify::{AuthContext, Claims, Delegation, Verifier, VerifierConfig, VerifyError};
