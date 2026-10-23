@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "use": "sig",
+      "alg": "RS256",
+      "kid": "delegation-test-only",
+      "n": "w2wN7GWdxDd3615cscK_IJ6LAyz8kUboTV4FzQvHlVozNKJBJbseCAlJe0J4-6HzTVSM2g4Gqqnpn75fMdBXEiXrLJbFf-ZMu9hXaSIQWoS3Hocn-0j5XGRP0Big7vqHjE1tQDc1BKuurN5ypKBx9EDdfMO8AG-CN7krS9RqA02IaCPNdc_AAD_FDjjea2mfaI5yIpZvM6TMsqjEH4EZeNXgmhKoMshRxIoz4WBfNAmzTDTqgj9b6xTbLygSZCQ5q81UW0RxlyX-2yhgXNAVgJLKYRRK36zRApIJh9thN81Sf_bGHDki_O-tOXtqLX2bQUmQZ-XX5GSDJEISXpVhaQ",
+      "e": "AQAB"
+    }
+  ]
+}

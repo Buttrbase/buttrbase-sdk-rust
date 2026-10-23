@@ -40,6 +40,30 @@ pub struct ClaimsData {
     pub user_uuid: Option<Uuid>,
 }
 
+/// The app that issued a user token on a person's behalf.
+///
+/// ButtrBase's user-token endpoint signs this top-level `act` claim. Human
+/// login tokens omit it. The subject remains the person; delegation does not
+/// turn that person into an app principal or grant administrative authority.
+/// `akid` identifies the upstream act-as grant. `client_ref` is an opaque audit
+/// label supplied by the caller, never an authorization grant.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct Delegation {
+    pub app_uuid: Uuid,
+    pub akid: Uuid,
+    #[serde(default)]
+    pub client_ref: Option<String>,
+}
+
+// Absence is the human-login shape. A present but malformed claim, including
+// explicit null, must not silently erase provenance and become that shape.
+fn deserialize_delegation<'de, D>(deserializer: D) -> Result<Option<Delegation>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Delegation::deserialize(deserializer).map(Some)
+}
+
 /// What's inside a buttrbase-issued JWT. The custom `org` claim is set
 /// by `JwtIssuer::issue` on the buttrbase side.
 #[derive(Clone, Debug, Deserialize)]
@@ -70,6 +94,9 @@ pub struct Claims {
     /// `with_expected_app_uuid` rejects it.
     #[serde(default)]
     pub app_uuid: Option<Uuid>,
+    /// Delegation provenance; trust it only on claims returned by the verifier.
+    #[serde(default, deserialize_with = "deserialize_delegation")]
+    pub act: Option<Delegation>,
     #[serde(default)]
     pub data: Option<ClaimsData>,
 }
@@ -83,6 +110,8 @@ pub struct AuthContext {
     pub scopes: Vec<String>,
     pub roles: Vec<String>,
     pub email: Option<String>,
+    /// Preserved by `verify_bearer` so route guards can distinguish delegation.
+    pub act: Option<Delegation>,
 }
 
 impl From<Claims> for AuthContext {
@@ -107,6 +136,7 @@ impl From<Claims> for AuthContext {
             scopes: c.scope,
             roles,
             email,
+            act: c.act,
         }
     }
 }
@@ -260,6 +290,7 @@ mod tests {
             scope: vec!["read:pages".into()],
             data: None,
             app_uuid: None,
+            act: None,
         };
         let auth: AuthContext = c.into();
         assert_eq!(auth.scopes, vec!["read:pages".to_string()]);
@@ -291,6 +322,7 @@ mod tests {
             scope: vec!["admin".to_string()],
             data: None,
             app_uuid: None,
+            act: None,
         };
         let auth: AuthContext = c.into();
         assert_eq!(auth.user_id, uid);
@@ -453,6 +485,7 @@ mod tests {
             iat: 0,
             scope: Vec::new(),
             app_uuid,
+            act: None,
             data: None,
         }
     }
@@ -532,5 +565,140 @@ mod tests {
                 .expected_app_uuid(),
             Some(ours)
         );
+    }
+
+    /// Exercise the real RS256 + JWKS verification path. The fixture is a
+    /// generated test-only key, never an upstream or production credential.
+    #[tokio::test]
+    async fn verified_delegation_preserves_human_identity_and_cannot_be_removed() {
+        use httpmock::prelude::*;
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        use serde_json::json;
+
+        let server = MockServer::start_async().await;
+        let jwks: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/delegation_test_jwks.json"
+        ))
+        .unwrap();
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks");
+            then.status(200).json_body(jwks);
+        });
+        let issuer = server.base_url();
+        let verifier = Verifier::new(VerifierConfig {
+            jwks_url: format!("{issuer}/jwks"),
+            issuer: issuer.clone(),
+            audience: Some("delegation-test".into()),
+        })
+        .with_expected_app_uuid(Uuid::parse_str(OUR_APP).unwrap());
+        let key = EncodingKey::from_rsa_der(include_bytes!(
+            "../../tests/fixtures/delegation_test_rsa_private.der"
+        ));
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("delegation-test-only".into());
+        let now = chrono::Utc::now().timestamp();
+        let human = json!({
+            "iss": issuer,
+            "aud": "delegation-test",
+            "sub": OTHER_APP,
+            "org": OUR_APP,
+            "app_uuid": OUR_APP,
+            "iat": now,
+            "exp": now + 900,
+            "scope": ["messages:read"],
+            "data": {"roles": "owner", "email": "test@example.invalid"}
+        });
+        let mut delegated = human.clone();
+        delegated["act"] = json!({
+            "app_uuid": OUR_APP,
+            "akid": OTHER_APP,
+            "client_ref": "synthetic-sdk-key"
+        });
+        let human_token = encode(&header, &human, &key).unwrap();
+        let delegated_token = encode(&header, &delegated, &key).unwrap();
+
+        let human_claims = verifier.verify(&human_token).await.unwrap();
+        assert!(human_claims.act.is_none());
+        let human_context = AuthContext::from(human_claims);
+        assert_eq!(human_context.roles, ["owner"]);
+        assert!(human_context.act.is_none());
+
+        let claims = verifier.verify(&delegated_token).await.unwrap();
+        assert_eq!(claims.sub, Uuid::parse_str(OTHER_APP).unwrap());
+        assert_eq!(claims.org, Uuid::parse_str(OUR_APP).unwrap());
+        assert_eq!(
+            claims.act.as_ref().unwrap().client_ref.as_deref(),
+            Some("synthetic-sdk-key")
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {delegated_token}").parse().unwrap(),
+        );
+        let context = verifier.verify_bearer(&headers).await.unwrap();
+        assert_eq!(context.user_id, human_context.user_id);
+        assert_eq!(context.roles, human_context.roles);
+        assert_eq!(context.scopes, human_context.scopes);
+        assert_eq!(context.act, claims.act);
+
+        // Removing `act` changes the signed payload. Reusing the delegated
+        // signature over that payload must not yield an interactive session.
+        let human_parts: Vec<_> = human_token.split('.').collect();
+        let delegated_parts: Vec<_> = delegated_token.split('.').collect();
+        let stripped = format!(
+            "{}.{}.{}",
+            human_parts[0], human_parts[1], delegated_parts[2]
+        );
+        assert!(matches!(
+            verifier.verify(&stripped).await,
+            Err(VerifyError::InvalidToken(_))
+        ));
+
+        // Nor can a modified client_ref or delegation grant preserve validity.
+        let mut altered = delegated.clone();
+        altered["act"]["client_ref"] = json!("different-sdk-key");
+        let altered_token = encode(&header, &altered, &key).unwrap();
+        let altered_parts: Vec<_> = altered_token.split('.').collect();
+        let tampered = format!(
+            "{}.{}.{}",
+            altered_parts[0], altered_parts[1], delegated_parts[2]
+        );
+        assert!(matches!(
+            verifier.verify(&tampered).await,
+            Err(VerifyError::InvalidToken(_))
+        ));
+
+        // Correctly signed malformed provenance also fails closed. In
+        // particular, explicit null is not the same thing as no act claim.
+        for bad in [
+            serde_json::Value::Null,
+            json!({}),
+            json!({"app_uuid": OUR_APP}),
+            json!({"app_uuid": OUR_APP, "akid": "not-a-uuid"}),
+            json!("delegated"),
+        ] {
+            let mut malformed = human.clone();
+            malformed["act"] = bad;
+            let token = encode(&header, &malformed, &key).unwrap();
+            assert!(matches!(
+                verifier.verify(&token).await,
+                Err(VerifyError::InvalidToken(_))
+            ));
+        }
+
+        // The upstream issuer omits client_ref when none was supplied.
+        delegated["act"]
+            .as_object_mut()
+            .unwrap()
+            .remove("client_ref");
+        let token = encode(&header, &delegated, &key).unwrap();
+        assert!(verifier
+            .verify(&token)
+            .await
+            .unwrap()
+            .act
+            .unwrap()
+            .client_ref
+            .is_none());
     }
 }

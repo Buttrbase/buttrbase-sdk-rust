@@ -925,8 +925,14 @@ async fn protected(
 
 ### Claims & AuthContext
 
-- `Claims` — raw JWT payload: `sub` (user UUID), `org` (org UUID), `exp`, `iat`, `scope`, `data` (optional identity envelope)
-- `AuthContext` — simplified: `user_id`, `org_id`, `scopes`, `roles`, `email`
+- `Claims` — raw JWT payload: `sub` (user UUID), `org` (org UUID), `exp`, `iat`, `scope`, `app_uuid`, `act`, `data` (optional identity envelope)
+- `AuthContext` — simplified: `user_id`, `org_id`, `scopes`, `roles`, `email`, `act`
+
+### Delegated member sessions
+
+The verified `act: Option<Delegation>` identifies an app that obtained a token on a member's behalf. It contains `app_uuid`, the grant UUID `akid`, and optional `client_ref`. The subject, organization and human roles remain unchanged. `client_ref` is an audit label, not a permission.
+
+Human login tokens omit `act`. A present malformed claim, including explicit null, is rejected. Use provenance only from successful `Verifier::verify` or `verify_bearer` results; decoding a JWT payload alone does not verify it. Applications must enforce their delegated-session route policy separately from human roles. Hand-written `Claims` or `AuthContext` literals now need `act: None` for ordinary interactive fixtures.
 
 ### Reading roles & email
 
@@ -936,7 +942,7 @@ Access tokens minted with the enrichment backend carry identity data under a `da
 let auth = verifier.verify_bearer(&headers).await
     .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-if auth.roles.iter().any(|r| r == "owner" || r == "org_admin") {
+if auth.act.is_none() && auth.roles.iter().any(|r| r == "owner" || r == "org_admin") {
     // grant elevated access
 }
 
