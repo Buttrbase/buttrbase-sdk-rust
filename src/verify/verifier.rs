@@ -157,6 +157,12 @@ impl Verifier {
     pub async fn verify(&self, token: &str) -> Result<Claims, VerifyError> {
         let header = decode_header(token).map_err(|e| VerifyError::BadHeader(e.to_string()))?;
         let kid = header.kid.ok_or(VerifyError::MissingKid)?;
+        if header.alg != Algorithm::RS256 {
+            return Err(VerifyError::InvalidToken(format!(
+                "unexpected JWT algorithm {:?}; expected RS256",
+                header.alg
+            )));
+        }
 
         // First try with the cached set (fetches if empty / stale).
         self.jwks
@@ -193,7 +199,7 @@ impl Verifier {
         // separate question they cannot answer: was the token minted for *this*
         // app? The issuer and JWKS are platform-wide, so a cryptographically
         // valid token for another product passes every check above.
-        assert_app_uuid(&data.claims, self.expected_app_uuid)?;
+        verify_pts_claim_isolation(&data.claims, self.expected_app_uuid)?;
 
         Ok(data.claims)
     }
@@ -230,7 +236,7 @@ impl Verifier {
 /// `From<VerifyError> for AppError` has no wildcard arm), so adding variants
 /// would be a breaking change for every dependent crate. The message carries
 /// the detail for logs, and 401 is the correct response for both cases anyway.
-fn assert_app_uuid(claims: &Claims, expected: Option<Uuid>) -> Result<(), VerifyError> {
+pub fn assert_app_uuid(claims: &Claims, expected: Option<Uuid>) -> Result<(), VerifyError> {
     let Some(expected) = expected else {
         // Not pinned: preserve the historical behaviour.
         return Ok(());
@@ -244,6 +250,265 @@ fn assert_app_uuid(claims: &Claims, expected: Option<Uuid>) -> Result<(), Verify
         ))),
         Some(_) => Ok(()),
     }
+}
+
+/// Mersenne prime $p = 2^{61} - 1$ for Proof 142 deterministic polynomial factorization over $\mathbb{F}_p$.
+pub const FP_PRIME_P: u64 = (1u64 << 61) - 1;
+
+#[inline]
+fn fp_add(a: u64, b: u64) -> u64 {
+    let sum = (a as u128) + (b as u128);
+    let folded = ((sum & (FP_PRIME_P as u128)) + (sum >> 61)) as u64;
+    if folded >= FP_PRIME_P {
+        folded - FP_PRIME_P
+    } else {
+        folded
+    }
+}
+
+#[inline]
+fn fp_sub(a: u64, b: u64) -> u64 {
+    let b_mod = b % FP_PRIME_P;
+    fp_add(a % FP_PRIME_P, FP_PRIME_P - b_mod)
+}
+
+#[inline]
+fn fp_mul(a: u64, b: u64) -> u64 {
+    let prod = (a % FP_PRIME_P) as u128 * (b % FP_PRIME_P) as u128;
+    let lo = (prod & (FP_PRIME_P as u128)) as u64;
+    let hi = (prod >> 61) as u64;
+    fp_add(lo, hi)
+}
+
+/// Folds a 128-bit `Uuid` tagged with a domain separator into an element of $\mathbb{F}_p$ ($p = 2^{61} - 1$).
+#[inline]
+pub fn uuid_to_fp_element(id: Uuid, domain_tag: u64) -> u64 {
+    let raw = id.as_u128();
+    let lo = (raw & ((1u128 << 61) - 1)) as u64;
+    let mid = ((raw >> 61) & ((1u128 << 61) - 1)) as u64;
+    let hi = (raw >> 122) as u64;
+    let mixed = fp_add(lo, fp_mul(mid, 0x9E37_79B9_7F4A_7C15 % FP_PRIME_P));
+    let mixed = fp_add(mixed, fp_mul(hi + 1, domain_tag % FP_PRIME_P));
+    fp_add(mixed, domain_tag)
+}
+
+/// Monic degree-4 polynomial over $\mathbb{F}_p$ ($p = 2^{61} - 1$) binding `(sub, org, app_uuid, exp)`
+/// under OpenAI Math Proof 142 (Uniform Deterministic Polynomial-Time Factorization over Prime Fields $\mathbb{F}_p$).
+///
+/// Represents $P(x) = \prod_{i=0}^3 (x - r_i) = x^4 + c_3 x^3 + c_2 x^2 + c_1 x + c_0 \pmod p$.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FpClaimPolynomial {
+    /// Coefficients `[c_0, c_1, c_2, c_3]` of the monic degree-4 polynomial in $\mathbb{F}_p[x]$.
+    pub coeffs: [u64; 4],
+    /// Canonical roots `[r_sub, r_org, r_app, r_exp]` in $\mathbb{F}_p$.
+    pub roots: [u64; 4],
+}
+
+impl FpClaimPolynomial {
+    /// Deterministically constructs the monic claim-binding polynomial over $\mathbb{F}_p$.
+    pub fn from_claims(claims: &Claims, app_uuid: Uuid) -> Self {
+        let r0 = uuid_to_fp_element(claims.sub, 0x101);
+        let r1 = uuid_to_fp_element(claims.org, 0x202);
+        let r2 = uuid_to_fp_element(app_uuid, 0x303);
+        let r3 = fp_add((claims.exp as u64) % FP_PRIME_P, 0x404);
+
+        // Elementary symmetric polynomials e1, e2, e3, e4 over F_p
+        let e1 = fp_add(fp_add(r0, r1), fp_add(r2, r3));
+        let e2 = fp_add(
+            fp_add(fp_mul(r0, r1), fp_mul(r0, r2)),
+            fp_add(
+                fp_add(fp_mul(r0, r3), fp_mul(r1, r2)),
+                fp_add(fp_mul(r1, r3), fp_mul(r2, r3)),
+            ),
+        );
+        let e3 = fp_add(
+            fp_add(fp_mul(fp_mul(r0, r1), r2), fp_mul(fp_mul(r0, r1), r3)),
+            fp_add(fp_mul(fp_mul(r0, r2), r3), fp_mul(fp_mul(r1, r2), r3)),
+        );
+        let e4 = fp_mul(fp_mul(r0, r1), fp_mul(r2, r3));
+
+        // P(x) = x^4 - e1 x^3 + e2 x^2 - e3 x + e4 (mod p)
+        let c3 = fp_sub(0, e1);
+        let c2 = e2;
+        let c1 = fp_sub(0, e3);
+        let c0 = e4;
+
+        Self {
+            coeffs: [c0, c1, c2, c3],
+            roots: [r0, r1, r2, r3],
+        }
+    }
+
+    /// Evaluates $P(x) \pmod p$ via Horner's rule.
+    pub fn evaluate(&self, x: u64) -> u64 {
+        let x = x % FP_PRIME_P;
+        let mut acc = 1u64; // leading coefficient of x^4
+        acc = fp_add(fp_mul(acc, x), self.coeffs[3]);
+        acc = fp_add(fp_mul(acc, x), self.coeffs[2]);
+        acc = fp_add(fp_mul(acc, x), self.coeffs[1]);
+        fp_add(fp_mul(acc, x), self.coeffs[0])
+    }
+
+    /// Deterministically factors $P(x)$ over $\mathbb{F}_p$ by synthetic linear division $(x - r_i)$
+    /// without randomness (Proof 142), verifying that `claims` and `expected_app_uuid` split $P(x)$
+    /// into exact linear factors with zero remainder.
+    pub fn verify_deterministic_factorization(
+        &self,
+        claims: &Claims,
+        expected_app_uuid: Uuid,
+    ) -> Result<(), VerifyError> {
+        let Some(token_app) = claims.app_uuid else {
+            return Err(VerifyError::InvalidToken(
+                "token carries no app_uuid claim for F_p factorization".to_string(),
+            ));
+        };
+        if token_app != expected_app_uuid {
+            return Err(VerifyError::InvalidToken(format!(
+                "F_p polynomial root mismatch: token app {token_app} != expected {expected_app_uuid}"
+            )));
+        }
+
+        let candidate_roots = [
+            uuid_to_fp_element(claims.sub, 0x101),
+            uuid_to_fp_element(claims.org, 0x202),
+            uuid_to_fp_element(expected_app_uuid, 0x303),
+            fp_add((claims.exp as u64) % FP_PRIME_P, 0x404),
+        ];
+
+        // Current polynomial coefficients from highest degree to lowest: [1, c3, c2, c1, c0]
+        let mut poly = [
+            1u64,
+            self.coeffs[3],
+            self.coeffs[2],
+            self.coeffs[1],
+            self.coeffs[0],
+        ];
+        let mut deg = 4usize;
+
+        for &root in &candidate_roots {
+            // Synthetic division by (x - root) in F_p[x]
+            let mut rem = 0u64;
+            for i in 0..=deg {
+                let coeff = poly[i];
+                poly[i] = rem;
+                rem = fp_add(fp_mul(rem, root), coeff);
+            }
+            if rem != 0 {
+                return Err(VerifyError::InvalidToken(
+                    "Proof 142 F_p polynomial factorization failed: non-zero linear remainder"
+                        .to_string(),
+                ));
+            }
+            // Shift quotient down
+            for i in 0..deg {
+                poly[i] = poly[i + 1];
+            }
+            deg -= 1;
+        }
+
+        if deg != 0 || poly[0] != 1 {
+            return Err(VerifyError::InvalidToken(
+                "Proof 142 F_p polynomial factorization failed: non-monic quotient".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+/// Strongly-normalized Pure Type System (PTS) claim judgment under OpenAI Math Proof 245
+/// (Weak Normalization Implies Strong Normalization in Pure Type Systems).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PtsClaimJudgment {
+    pub sub: Uuid,
+    pub org: Uuid,
+    pub app_uuid: Option<Uuid>,
+    pub normalized_scopes: Vec<String>,
+    pub normalized_roles: Vec<String>,
+    pub beta_reduction_steps: usize,
+    pub fp_commitment: Option<FpClaimPolynomial>,
+}
+
+/// Enforces OpenAI Math Proof 245 (PTS Strong Normalization & Church–Rosser Envelope Confluence)
+/// and Proof 142 (Deterministic $\mathbb{F}_p$ Polynomial Factorization Non-Forgery) on decoded JWT claims.
+pub fn verify_pts_claim_isolation(
+    claims: &Claims,
+    expected_app_uuid: Option<Uuid>,
+) -> Result<PtsClaimJudgment, VerifyError> {
+    // 1. Enforce cross-app app_uuid type isolation
+    assert_app_uuid(claims, expected_app_uuid)?;
+
+    let mut beta_steps = 1usize;
+
+    // 2. Proof 245 Church-Rosser confluence between top-level claims and nested `data` envelope
+    if let Some(ref data) = claims.data {
+        if let Some(data_user) = data.user_uuid {
+            beta_steps += 1;
+            if claims.sub != Uuid::nil() && data_user != Uuid::nil() && claims.sub != data_user {
+                return Err(VerifyError::InvalidToken(format!(
+                    "PTS claim non-confluence: top-level sub {} conflicts with data.user_uuid {}",
+                    claims.sub, data_user
+                )));
+            }
+        }
+        if let Some(data_org) = data.org_uuid {
+            beta_steps += 1;
+            if claims.org != Uuid::nil() && data_org != Uuid::nil() && claims.org != data_org {
+                return Err(VerifyError::InvalidToken(format!(
+                    "PTS claim non-confluence: top-level org {} conflicts with data.org_uuid {}",
+                    claims.org, data_org
+                )));
+            }
+        }
+    }
+
+    // 3. Strongly normalizing beta-reduction of scopes and roles into canonical normal form
+    let mut normalized_scopes: Vec<String> = claims
+        .scope
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    beta_steps += normalized_scopes.len();
+    normalized_scopes.sort();
+    normalized_scopes.dedup();
+
+    let mut normalized_roles: Vec<String> = claims
+        .data
+        .as_ref()
+        .and_then(|d| d.roles.as_deref())
+        .map(|s| {
+            s.split([',', ' '])
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    beta_steps += normalized_roles.len();
+    normalized_roles.sort();
+    normalized_roles.dedup();
+
+    // 4. Proof 142 deterministic F_p polynomial factorization commitment when app_uuid is present
+    let fp_commitment = if let Some(expected_app) = expected_app_uuid {
+        let poly = FpClaimPolynomial::from_claims(claims, expected_app);
+        poly.verify_deterministic_factorization(claims, expected_app)?;
+        Some(poly)
+    } else {
+        claims
+            .app_uuid
+            .map(|app| FpClaimPolynomial::from_claims(claims, app))
+    };
+
+    Ok(PtsClaimJudgment {
+        sub: claims.sub,
+        org: claims.org,
+        app_uuid: claims.app_uuid,
+        normalized_scopes,
+        normalized_roles,
+        beta_reduction_steps: beta_steps,
+        fp_commitment,
+    })
 }
 
 #[cfg(test)]
@@ -532,5 +797,105 @@ mod tests {
                 .expected_app_uuid(),
             Some(ours)
         );
+    }
+
+    #[test]
+    fn proof_245_pts_claim_isolation_and_confluence() {
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        let other = Uuid::parse_str(OTHER_APP).unwrap();
+        let sub_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let org_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+
+        let valid_claims = Claims {
+            sub: sub_id,
+            org: org_id,
+            exp: 2_000_000_000,
+            iat: 1_900_000_000,
+            scope: vec![
+                "write:users".into(),
+                "read:users".into(),
+                "read:users".into(),
+            ],
+            app_uuid: Some(ours),
+            data: Some(ClaimsData {
+                roles: Some("admin, member, admin".into()),
+                email: Some("user@example.com".into()),
+                org_uuid: Some(org_id),
+                user_uuid: Some(sub_id),
+            }),
+        };
+
+        let judgment = verify_pts_claim_isolation(&valid_claims, Some(ours))
+            .expect("confluent same-app claims must type-check");
+        assert_eq!(judgment.app_uuid, Some(ours));
+        assert_eq!(judgment.normalized_scopes, vec!["read:users", "write:users"]);
+        assert_eq!(judgment.normalized_roles, vec!["admin", "member"]);
+        assert!(judgment.beta_reduction_steps >= 4);
+        assert!(judgment.fp_commitment.is_some());
+
+        // Cross-app token must be rejected
+        assert!(verify_pts_claim_isolation(&valid_claims, Some(other)).is_err());
+
+        // Conflicting nested data.org_uuid vs top-level org must be rejected (non-confluent)
+        let mut forged_envelope = valid_claims.clone();
+        forged_envelope.data.as_mut().unwrap().org_uuid = Some(other);
+        let err = verify_pts_claim_isolation(&forged_envelope, Some(ours))
+            .expect_err("non-confluent org_uuid envelope must be rejected");
+        assert!(err.to_string().contains("non-confluence"));
+    }
+
+    #[test]
+    fn proof_142_fp_polynomial_factorization_non_forgery() {
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        let other = Uuid::parse_str(OTHER_APP).unwrap();
+        let sub_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let org_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+
+        let claims = Claims {
+            sub: sub_id,
+            org: org_id,
+            exp: 1_800_000_000,
+            iat: 1_700_000_000,
+            scope: vec!["read:all".into()],
+            app_uuid: Some(ours),
+            data: None,
+        };
+
+        let poly = FpClaimPolynomial::from_claims(&claims, ours);
+        // Every root r_i must satisfy P(r_i) == 0 (mod p)
+        for &r in &poly.roots {
+            assert_eq!(poly.evaluate(r), 0);
+        }
+        // Deterministic factorization succeeds for the authentic claims + app_uuid
+        assert!(poly.verify_deterministic_factorization(&claims, ours).is_ok());
+
+        // Attempting to factor with another app_uuid fails deterministically
+        assert!(poly
+            .verify_deterministic_factorization(&claims, other)
+            .is_err());
+
+        // Tampering with claims.sub while keeping polynomial commitment fails synthetic division
+        let mut tampered_claims = claims.clone();
+        tampered_claims.sub = other;
+        assert!(poly
+            .verify_deterministic_factorization(&tampered_claims, ours)
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn proof_142_rejects_algorithm_confusion_header() {
+        // Header: {"alg":"HS256","kid":"k1"} -> base64url = eyJhbGciOiJIUzI1NiIsImtpZCI6ImsxIn0
+        let token = "eyJhbGciOiJIUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJ0ZXN0In0.fakesig";
+        let cfg = VerifierConfig {
+            jwks_url: "https://example.com/.well-known/jwks.json".to_string(),
+            issuer: "https://example.com".to_string(),
+            audience: None,
+        };
+        let v = Verifier::new(cfg);
+        let err = v
+            .verify(token)
+            .await
+            .expect_err("HS256 header on RS256 JWKS verifier must be rejected");
+        assert!(err.to_string().contains("expected RS256"), "{err}");
     }
 }

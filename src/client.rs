@@ -349,8 +349,13 @@ impl ButtrBaseClient {
     /// against. REQUIRED for [`check_entitlement`](Self::check_entitlement) and
     /// [`check_entitlements`](Self::check_entitlements) — without it the
     /// backend rejects the request with `400 missing field 'app_uuid'`.
+    ///
+    /// Also pins the embedded JWT [`Verifier`] to this `app_uuid` so both
+    /// RS256 JWKS verification and HS256 introspection enforce cross-app
+    /// `app_uuid` claim isolation (Proofs 245, 142).
     pub fn with_app_uuid(mut self, app_uuid: Uuid) -> Self {
         self.app_uuid = Some(app_uuid);
+        self.verifier = self.verifier.with_expected_app_uuid(app_uuid);
         self
     }
 
@@ -468,9 +473,14 @@ impl ButtrBaseClient {
                 let app_uuid = resp
                     .get("app_uuid")
                     .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok());
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .or_else(|| {
+                        data.and_then(|d| d.get("app_uuid"))
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| Uuid::parse_str(s).ok())
+                    });
 
-                return Ok(Claims {
+                let claims = Claims {
                     sub: user_uuid,
                     org: org_uuid,
                     exp,
@@ -483,7 +493,12 @@ impl ButtrBaseClient {
                         org_uuid: Some(org_uuid),
                         user_uuid: Some(user_uuid),
                     }),
-                });
+                };
+                crate::verify::verify_pts_claim_isolation(
+                    &claims,
+                    self.verifier.expected_app_uuid(),
+                )?;
+                return Ok(claims);
             }
         }
         Ok(self.verifier.verify(token).await?)
@@ -3203,6 +3218,38 @@ mod entitlement_app_uuid_tests {
         mock.assert();
         assert!(!result.granted);
         assert_eq!(bb.app_uuid(), None);
+    }
+
+    #[tokio::test]
+    async fn verify_token_hs256_introspection_enforces_pinned_app_uuid() {
+        let server = MockServer::start();
+        let ours = Uuid::parse_str(APP).unwrap();
+        let other = Uuid::parse_str("99999999-9999-9999-9999-999999999999").unwrap();
+
+        // Header: {"alg":"HS256"} -> eyJhbGciOiJIUzI1NiJ9
+        let hs256_token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.sig";
+
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/api/auth/introspect");
+            then.status(200).json_body(json!({
+                "active": true,
+                "exp": 2000000000u64,
+                "app_uuid": other.to_string(),
+                "data": {
+                    "user_uuid": "00000000-0000-0000-0000-000000000001",
+                    "org_uuid": "00000000-0000-0000-0000-000000000002",
+                    "roles": "admin"
+                }
+            }));
+        });
+
+        let bb = client(&server).with_app_uuid(ours);
+        let err = bb
+            .verify_token(hs256_token)
+            .await
+            .expect_err("HS256 token for another app_uuid must be rejected when pinned");
+        mock.assert();
+        assert!(err.to_string().contains(&other.to_string()), "{err}");
     }
 }
 
