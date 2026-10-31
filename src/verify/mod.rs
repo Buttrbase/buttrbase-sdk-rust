@@ -13,6 +13,7 @@ mod verifier;
 
 pub use error::VerifyError;
 pub use verifier::{
-    assert_app_uuid, uuid_to_fp_element, verify_pts_claim_isolation, AuthContext, Claims,
-    ClaimsData, FpClaimPolynomial, PtsClaimJudgment, Verifier, VerifierConfig, FP_PRIME_P,
+    assert_app_uuid, uuid_to_fp_element, verify_pts_claim_isolation, AuthContext,
+    ClaimPollBatchSoa, Claims, ClaimsData, FpClaimPolynomial, PtsClaimJudgment, Verifier,
+    VerifierConfig, FP_PRIME_P,
 };

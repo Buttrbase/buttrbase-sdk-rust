@@ -35,6 +35,8 @@
 //! }).await?;
 //! ```
 
+#![forbid(unsafe_code)]
+
 pub mod client;
 pub mod error;
 pub mod models;
@@ -48,6 +50,6 @@ pub use client::ButtrBaseClient;
 pub use error::Error;
 pub use models::Environment;
 pub use verify::{
-    assert_app_uuid, verify_pts_claim_isolation, AuthContext, Claims, FpClaimPolynomial,
-    PtsClaimJudgment, Verifier, VerifierConfig, VerifyError,
+    assert_app_uuid, verify_pts_claim_isolation, AuthContext, ClaimPollBatchSoa, Claims,
+    FpClaimPolynomial, PtsClaimJudgment, Verifier, VerifierConfig, VerifyError,
 };

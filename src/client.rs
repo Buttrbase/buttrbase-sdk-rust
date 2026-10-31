@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ButtrbaseTransport: Send + Sync {
     async fn execute(
@@ -3255,7 +3256,6 @@ mod entitlement_app_uuid_tests {
 
 #[cfg(test)]
 mod magic_link_shape_tests {
-    use super::*;
     use crate::models::TokenPair;
 
     /// The backend's `/api/auth/magic-link/verify` returns

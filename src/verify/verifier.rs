@@ -158,10 +158,7 @@ impl Verifier {
         let header = decode_header(token).map_err(|e| VerifyError::BadHeader(e.to_string()))?;
         let kid = header.kid.ok_or(VerifyError::MissingKid)?;
         if header.alg != Algorithm::RS256 {
-            return Err(VerifyError::InvalidToken(format!(
-                "unexpected JWT algorithm {:?}; expected RS256",
-                header.alg
-            )));
+            return Err(VerifyError::InvalidToken("InvalidAlgorithm".to_string()));
         }
 
         // First try with the cached set (fetches if empty / stale).
@@ -296,12 +293,62 @@ pub fn uuid_to_fp_element(id: Uuid, domain_tag: u64) -> u64 {
 /// under OpenAI Math Proof 142 (Uniform Deterministic Polynomial-Time Factorization over Prime Fields $\mathbb{F}_p$).
 ///
 /// Represents $P(x) = \prod_{i=0}^3 (x - r_i) = x^4 + c_3 x^3 + c_2 x^2 + c_1 x + c_0 \pmod p$.
+#[repr(C, align(64))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FpClaimPolynomial {
     /// Coefficients `[c_0, c_1, c_2, c_3]` of the monic degree-4 polynomial in $\mathbb{F}_p[x]$.
     pub coeffs: [u64; 4],
     /// Canonical roots `[r_sub, r_org, r_app, r_exp]` in $\mathbb{F}_p$.
     pub roots: [u64; 4],
+}
+
+const _: () = assert!(core::mem::size_of::<FpClaimPolynomial>() == 64);
+const _: () = assert!(core::mem::align_of::<FpClaimPolynomial>() == 64);
+
+/// 64-byte cache-aligned Structure-of-Arrays (SoA) batch window for 4 concurrent
+/// session/poll claim commitments (`[u64; 4]` expiry timestamps + `[u64; 4]` $\mathbb{F}_p$ evaluations).
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClaimPollBatchSoa {
+    /// Expiry timestamps (`exp` in Unix seconds) for up to 4 polled session tokens.
+    pub exp_lanes: [u64; 4],
+    /// Evaluated $\mathbb{F}_p$ polynomial tags $P(\text{challenge}) \pmod p$ for the 4 lanes.
+    pub fp_tag_lanes: [u64; 4],
+}
+
+const _: () = assert!(core::mem::size_of::<ClaimPollBatchSoa>() == 64);
+const _: () = assert!(core::mem::align_of::<ClaimPollBatchSoa>() == 64);
+
+impl ClaimPollBatchSoa {
+    /// Packs up to 4 `(Claims, app_uuid)` pairs into a single 64-byte cache-aligned SoA window
+    /// evaluated at `challenge` in $\mathbb{F}_p$. Unused lanes are zero-filled.
+    pub fn from_claims_slice(items: &[(&Claims, Uuid)], challenge: u64) -> Self {
+        let mut exp_lanes = [0u64; 4];
+        let mut fp_tag_lanes = [0u64; 4];
+        for (lane, (claims, app_uuid)) in items.iter().take(4).enumerate() {
+            exp_lanes[lane] = claims.exp as u64;
+            let poly = FpClaimPolynomial::from_claims(claims, *app_uuid);
+            fp_tag_lanes[lane] = poly.evaluate(challenge);
+        }
+        Self {
+            exp_lanes,
+            fp_tag_lanes,
+        }
+    }
+
+    /// Returns a 4-bit mask where bit `i` is `1` iff lane `i` is populated and strictly un-expired (`exp > now_unix_secs`).
+    #[inline]
+    pub const fn active_lane_mask(&self, now_unix_secs: u64) -> u8 {
+        let mut mask = 0u8;
+        let mut i = 0;
+        while i < 4 {
+            if self.exp_lanes[i] > now_unix_secs {
+                mask |= 1u8 << i;
+            }
+            i += 1;
+        }
+        mask
+    }
 }
 
 impl FpClaimPolynomial {
@@ -388,9 +435,9 @@ impl FpClaimPolynomial {
         for &root in &candidate_roots {
             // Synthetic division by (x - root) in F_p[x]
             let mut rem = 0u64;
-            for i in 0..=deg {
-                let coeff = poly[i];
-                poly[i] = rem;
+            for slot in poly.iter_mut().take(deg + 1) {
+                let coeff = *slot;
+                *slot = rem;
                 rem = fp_add(fp_mul(rem, root), coeff);
             }
             if rem != 0 {
@@ -896,6 +943,35 @@ mod tests {
             .verify(token)
             .await
             .expect_err("HS256 header on RS256 JWKS verifier must be rejected");
-        assert!(err.to_string().contains("expected RS256"), "{err}");
+        assert!(err.to_string().contains("InvalidAlgorithm"), "{err}");
+    }
+
+    #[test]
+    fn soa_64_byte_cache_aligned_claim_poll_batch() {
+        assert_eq!(core::mem::size_of::<FpClaimPolynomial>(), 64);
+        assert_eq!(core::mem::align_of::<FpClaimPolynomial>(), 64);
+        assert_eq!(core::mem::size_of::<ClaimPollBatchSoa>(), 64);
+        assert_eq!(core::mem::align_of::<ClaimPollBatchSoa>(), 64);
+
+        let ours = Uuid::parse_str(OUR_APP).unwrap();
+        let c1 = Claims {
+            sub: Uuid::from_u128(1),
+            org: Uuid::from_u128(2),
+            exp: 2_000,
+            iat: 1_000,
+            scope: vec!["chat:sync".into()],
+            app_uuid: Some(ours),
+            data: None,
+        };
+        let c2 = Claims {
+            exp: 1_500,
+            ..c1.clone()
+        };
+        let batch = ClaimPollBatchSoa::from_claims_slice(&[(&c1, ours), (&c2, ours)], 42);
+        assert_eq!(batch.exp_lanes, [2_000, 1_500, 0, 0]);
+        assert_eq!(batch.active_lane_mask(1_200), 0b0011);
+        assert_eq!(batch.active_lane_mask(1_500), 0b0001);
+        assert_eq!(batch.active_lane_mask(2_000), 0b0000);
+        assert_ne!(batch.fp_tag_lanes[0], batch.fp_tag_lanes[1]);
     }
 }
